@@ -19,7 +19,7 @@ async function listApplications(req, res, next) {
       values.push(req.query.status);
     }
     const [rows] = await pool.query(
-      `SELECT a.*, j.title, j.company FROM applications a
+      `SELECT a.*, j.title, j.company, j.apply_url FROM applications a
        JOIN job_descriptions j ON j.id = a.job_id
        WHERE ${where} ORDER BY a.updated_at DESC`,
       values,
@@ -41,15 +41,22 @@ async function createApplication(req, res, next) {
     const interviewDate = validateDate(body.interview_date, 'interview_date');
     if (typeof nextActionDate === 'string') return res.status(400).json(errorResponse(nextActionDate, 400));
     if (typeof interviewDate === 'string') return res.status(400).json(errorResponse(interviewDate, 400));
-    const [jobs] = await pool.query('SELECT id FROM job_descriptions WHERE id = ? LIMIT 1', [jobId]);
+    const [jobs] = await pool.query('SELECT id FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [jobId, req.user.id]);
     if (!jobs.length) return res.status(404).json(errorResponse('Job not found', 404));
     const [result] = await pool.query(
-      `INSERT INTO applications (user_id, job_id, status, notes, next_action_date, interview_date)
+      `INSERT IGNORE INTO applications (user_id, job_id, status, notes, next_action_date, interview_date)
        VALUES (?, ?, ?, ?, ?, ?)`,
       [req.user.id, jobId, status, body.notes ? String(body.notes).trim() : null, nextActionDate, interviewDate],
     );
-    const [rows] = await pool.query('SELECT * FROM applications WHERE id = ? LIMIT 1', [result.insertId]);
-    return res.status(201).json(successResponse('Application created successfully', { application: rows[0] }));
+    const [rows] = await pool.query(
+      'SELECT * FROM applications WHERE user_id = ? AND job_id = ? LIMIT 1',
+      [req.user.id, jobId],
+    );
+    const created = result.affectedRows > 0;
+    return res.status(created ? 201 : 200).json(successResponse(
+      created ? 'Application created successfully' : 'Application already exists',
+      { application: rows[0] },
+    ));
   } catch (error) {
     next(error);
   }

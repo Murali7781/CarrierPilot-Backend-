@@ -6,6 +6,19 @@ function parseSkillArray(value) {
     return [];
   }
 
+  function learningPlan(skill) {
+    const normalized = skill.toLowerCase();
+    const plans = {
+      react: ['Components and hooks', 'State and data fetching', 'Build an accessible dashboard'],
+      javascript: ['Async JavaScript', 'Modern modules', 'Build a small API client'],
+      typescript: ['Types and interfaces', 'Generics and utility types', 'Convert a React feature'],
+      sql: ['Joins and aggregations', 'Indexes and query plans', 'Answer a business question'],
+      figma: ['Auto layout', 'Design tokens', 'Prototype a user flow'],
+      python: ['Data structures', 'Functions and testing', 'Automate a useful workflow'],
+    };
+    return plans[normalized] || ['Learn the core concepts', 'Follow a guided tutorial', 'Build a portfolio project'];
+  }
+
   if (Array.isArray(value)) {
     return value.map((item) => String(item).trim()).filter(Boolean);
   }
@@ -60,7 +73,9 @@ async function getSkillGaps(req, res, next) {
       current_level: 'Beginner',
       missing_level: 'Intermediate',
       priority: index === 0 ? 'High' : 'Medium',
-      recommended_topics: ['Practice exercises', 'Hands-on projects', 'Focused study plan'],
+      recommended_topics: learningPlan(skill),
+      estimated_hours: 8 + index * 2,
+      resource_type: 'guided project',
     }));
 
     return res.status(200).json(successResponse('Skill gaps retrieved successfully', { skills: generated }));

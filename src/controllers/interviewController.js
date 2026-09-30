@@ -3,15 +3,20 @@ const { successResponse, errorResponse } = require('../utils/response');
 
 async function createInterview(req, res, next) {
   try {
-    const { type, title } = req.body || {};
+    const { type, title, scheduled_at: scheduledAt } = req.body || {};
 
     if (!type) {
       return res.status(400).json(errorResponse('Interview type is required', 400));
     }
 
+    const parsedDate = scheduledAt ? new Date(scheduledAt) : null;
+    if (scheduledAt && Number.isNaN(parsedDate.getTime())) {
+      return res.status(400).json(errorResponse('scheduled_at must be a valid date and time', 400));
+    }
+
     const [result] = await pool.query(
-      'INSERT INTO interview_sessions (user_id, type, title) VALUES (?, ?, ?)',
-      [req.user.id, String(type).trim(), title ? String(title).trim() : null],
+      'INSERT INTO interview_sessions (user_id, type, title, scheduled_at) VALUES (?, ?, ?, ?)',
+      [req.user.id, String(type).trim(), title ? String(title).trim() : null, parsedDate],
     );
 
     const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE id = ? LIMIT 1', [result.insertId]);

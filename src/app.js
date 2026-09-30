@@ -17,8 +17,25 @@ const dashboardRoutes = require('./routes/dashboardRoutes');
 const errorMiddleware = require('./middleware/errorMiddleware');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = new Set(
+  (process.env.CLIENT_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    const error = new Error('This application origin is not allowed.');
+    error.statusCode = 403;
+    callback(error);
+  },
+}));
+app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req, res) => {
   res.json({
