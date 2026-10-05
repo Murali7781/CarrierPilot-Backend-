@@ -15,10 +15,24 @@ function errorMiddleware(err, req, res, next) {
     message = 'A duplicate record already exists.';
   }
 
-  res.status(statusCode).json({
+  if (Number.isInteger(err?.retryAfterSeconds) && err.retryAfterSeconds > 0) {
+    res.set('Retry-After', String(err.retryAfterSeconds));
+  }
+
+  const payload = {
     success: false,
     message,
-  });
+  };
+  if (err?.providerError && typeof err.providerError === 'object') {
+    const { status, type, code } = err.providerError;
+    payload.providerError = {
+      status: Number.isInteger(status) ? status : null,
+      type: typeof type === 'string' ? type : null,
+      code: typeof code === 'string' ? code : null,
+    };
+  }
+
+  res.status(statusCode).json(payload);
 }
 
 module.exports = errorMiddleware;

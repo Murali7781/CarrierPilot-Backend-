@@ -1,167 +1,145 @@
 const { pool } = require('../config/db');
 const { successResponse, errorResponse } = require('../utils/response');
+const { positiveInteger } = require('../utils/validation');
+
+function badRequest(message) { const error = new Error(message); error.statusCode = 400; return error; }
+
+function cleanText(value, field, { required = false, max = 1000 } = {}) {
+  if (value == null && !required) return null;
+  if (typeof value !== 'string') throw badRequest(`${field} must be text.`);
+  const clean = value.trim();
+  if (required && !clean) throw badRequest(`${field} is required.`);
+  if (clean.length > max) throw badRequest(`${field} must be ${max} characters or fewer.`);
+  if (Buffer.byteLength(clean, 'utf8') > 60000) throw badRequest(`${field} exceeds the database text limit.`);
+  return clean || null;
+}
+
+function normalizeSkills(value, field) {
+  if (value == null || value === '') return [];
+  if (!Array.isArray(value) && typeof value !== 'string') throw badRequest(`${field} must be a list of skills.`);
+  const entries = Array.isArray(value) ? value : value.split(',');
+  if (entries.length > 100) throw badRequest(`${field} cannot contain more than 100 skills.`);
+  const result = new Map();
+  for (const entry of entries) {
+    if (typeof entry !== 'string') throw badRequest(`Each item in ${field} must be text.`);
+    const skill = entry.trim();
+    if (!skill) continue;
+    if (skill.length > 100) throw badRequest(`Each item in ${field} must be 100 characters or fewer.`);
+    if (!result.has(skill.toLowerCase())) result.set(skill.toLowerCase(), skill);
+  }
+  return [...result.values()];
+}
+
+function cleanHttpUrl(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || value.length > 2048) throw badRequest('Job posting URL must be a valid URL under 2,048 characters.');
+  try {
+    const parsed = new URL(value.trim());
+    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
+    return parsed.toString();
+  } catch { throw badRequest('Job posting URL must start with http:// or https://.'); }
+}
 
 async function listJobs(req, res, next) {
   try {
-    
-    if (req.query.search) {
-      where += ' AND (title LIKE ? OR company LIKE ?)';
-      const search = `%${String(req.query.search).slice(0, 100)}%`;
-      values.push(search, search);
+    const page = req.query.page === undefined ? 1 : positiveInteger(req.query.page, 'page');
+    const limit = req.query.limit === undefined ? 20 : positiveInteger(req.query.limit, 'limit');
+    if (page > 100000) return res.status(400).json(errorResponse('page must be 100,000 or fewer'));
+    if (limit > 100) return res.status(400).json(errorResponse('limit must be 100 or fewer'));
+    const where = ['user_id = ?'];
+    const values = [req.user.id];
+    if (req.query.search !== undefined) {
+      const searchText = cleanText(req.query.search, 'search', { max: 100 });
+      if (searchText) { where.push('(title LIKE ? OR company LIKE ? OR description LIKE ?)'); const search = `%${searchText}%`; values.push(search, search, search); }
     }
-    if (req.query.company) {
-      where += ' AND company = ?';
-      values.push(String(req.query.company).slice(0, 150));
+    if (req.query.company !== undefined) {
+      const company = cleanText(req.query.company, 'company', { max: 150 });
+      if (company) { where.push('company = ?'); values.push(company); }
     }
+    const whereSql = where.join(' AND ');
     const offset = (page - 1) * limit;
-    const [rows] = await pool.query(
-      `SELECT * FROM job_descriptions WHERE ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [...values, limit, offset],
-    );
-    const [countRows] = await pool.query(`SELECT COUNT(*) AS total FROM job_descriptions WHERE ${where}`, values);
-
-    return res.status(200).json(successResponse('Job descriptions retrieved successfully', {
-      jobs: rows,
-      pagination: { page, limit, total: countRows[0].total, totalPages: Math.ceil(countRows[0].total / limit) },
-    }));
-  } catch (error) {
-    next(error);
-  }
+    const [rows, countRows] = await Promise.all([
+      pool.query(`SELECT id, user_id, title, company, description, required_skills, preferred_skills, experience_requirements, location, source_url, created_at, updated_at FROM job_descriptions WHERE ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, [...values, limit, offset]),
+      pool.query(`SELECT COUNT(*) AS total FROM job_descriptions WHERE ${whereSql}`, values),
+    ]);
+    const total = Number(countRows[0][0].total) || 0;
+    return res.status(200).json(successResponse('Job descriptions retrieved successfully', { jobs: rows[0], pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
+  } catch (error) { return next(error); }
 }
 
 async function createJob(req, res, next) {
   try {
-    const { title, company, description, required_skills, preferred_skills, experience_requirements } = req.body || {};
-
-    if (!title || !description) {
-      return res.status(400).json(errorResponse('Job title and description are required', 400));
-    }
-
+    const body = req.body || {};
+    const title = cleanText(body.title, 'Job title', { required: true, max: 150 });
+    const description = cleanText(body.description, 'Job description', { required: true, max: 15000 });
+    const company = cleanText(body.company, 'Company', { max: 150 });
+    const experience = cleanText(body.experience_requirements, 'Experience requirements', { max: 1000 });
+    const location = cleanText(body.location, 'Location', { max: 200 });
+    const sourceUrl = cleanHttpUrl(body.source_url);
+    const requiredSkills = normalizeSkills(body.required_skills, 'required_skills');
+    const preferredSkills = normalizeSkills(body.preferred_skills, 'preferred_skills');
     const [result] = await pool.query(
-      `INSERT INTO job_descriptions (user_id, title, company, description, required_skills, preferred_skills, experience_requirements)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        req.user.id,
-        String(title).trim(),
-        company || null,
-        String(description).trim(),
-        required_skills ? JSON.stringify(required_skills) : JSON.stringify([]),
-        preferred_skills ? JSON.stringify(preferred_skills) : JSON.stringify([]),
-        experience_requirements || null,
-      ],
+      `INSERT INTO job_descriptions (user_id, title, company, description, required_skills, preferred_skills, experience_requirements, location, source_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [req.user.id, title, company, description, JSON.stringify(requiredSkills), JSON.stringify(preferredSkills), experience, location, sourceUrl],
     );
-
-    const [rows] = await pool.query('SELECT * FROM job_descriptions WHERE id = ? LIMIT 1', [result.insertId]);
-
+    const [rows] = await pool.query('SELECT * FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [result.insertId, req.user.id]);
     return res.status(201).json(successResponse('Job description created successfully', { job: rows[0] }));
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
 async function getJob(req, res, next) {
   try {
+    const id = positiveInteger(req.params.id, 'job id');
     const [rows] = await pool.query(
-      'SELECT * FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1',
-      [req.params.id, req.user.id],
+      `SELECT j.*,
+              (SELECT sj.id FROM saved_jobs sj WHERE sj.job_id = j.id AND sj.user_id = ? LIMIT 1) AS saved_job_id,
+              (SELECT a.id FROM applications a WHERE a.job_id = j.id AND a.user_id = ? LIMIT 1) AS application_id,
+              (SELECT a.status FROM applications a WHERE a.job_id = j.id AND a.user_id = ? LIMIT 1) AS application_status
+       FROM job_descriptions j WHERE j.id = ? AND j.user_id = ? LIMIT 1`,
+      [req.user.id, req.user.id, req.user.id, id, req.user.id],
     );
-
-    if (!rows.length) {
-      return res.status(404).json(errorResponse('Job description not found', 404));
-    }
-
+    if (!rows.length) return res.status(404).json(errorResponse('Job description not found'));
     return res.status(200).json(successResponse('Job description retrieved successfully', { job: rows[0] }));
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
 async function updateJob(req, res, next) {
   try {
-    const { title, company, description, required_skills, preferred_skills, experience_requirements } = req.body || {};
-
-    const [existing] = await pool.query(
-      'SELECT id FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1',
-      [req.params.id, req.user.id],
-    );
-
-    if (!existing.length) {
-      return res.status(404).json(errorResponse('Job description not found', 404));
-    }
-
+    const id = positiveInteger(req.params.id, 'job id');
+    const body = req.body || {};
     const updates = [];
     const values = [];
-
-    if (title !== undefined) {
-      updates.push('title = ?');
-      values.push(String(title).trim());
+    const textFields = { title: ['title', 150], company: ['Company', 150], description: ['Job description', 15000], experience_requirements: ['Experience requirements', 1000], location: ['Location', 200] };
+    for (const [field, [label, max]] of Object.entries(textFields)) {
+      if (body[field] === undefined) continue;
+      const value = cleanText(body[field], label, { required: field === 'title' || field === 'description', max });
+      updates.push(`${field} = ?`); values.push(value);
     }
-
-    if (company !== undefined) {
-      updates.push('company = ?');
-      values.push(company || null);
+    for (const [field, label] of [['required_skills', 'Required skills'], ['preferred_skills', 'Preferred skills']]) {
+      if (body[field] === undefined) continue;
+      updates.push(`${field} = ?`); values.push(JSON.stringify(normalizeSkills(body[field], label)));
     }
-
-    if (description !== undefined) {
-      updates.push('description = ?');
-      values.push(String(description).trim());
+    if (body.source_url !== undefined) { updates.push('source_url = ?'); values.push(cleanHttpUrl(body.source_url)); }
+    if (!updates.length) return res.status(400).json(errorResponse('Provide at least one job field to update'));
+    values.push(id, req.user.id);
+    const [result] = await pool.query(`UPDATE job_descriptions SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, values);
+    if (!result.affectedRows) {
+      const [existing] = await pool.query('SELECT id FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [id, req.user.id]);
+      if (!existing.length) return res.status(404).json(errorResponse('Job description not found'));
     }
-
-    if (required_skills !== undefined) {
-      updates.push('required_skills = ?');
-      values.push(JSON.stringify(required_skills));
-    }
-
-    if (preferred_skills !== undefined) {
-      updates.push('preferred_skills = ?');
-      values.push(JSON.stringify(preferred_skills));
-    }
-
-    if (experience_requirements !== undefined) {
-      updates.push('experience_requirements = ?');
-      values.push(experience_requirements || null);
-    }
-
-    if (!updates.length) {
-      return res.status(400).json(errorResponse('No valid job fields provided', 400));
-    }
-
-    values.push(req.params.id, req.user.id);
-
-    await pool.query(
-      `UPDATE job_descriptions SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-      values,
-    );
-
-    const [rows] = await pool.query('SELECT * FROM job_descriptions WHERE id = ? LIMIT 1', [req.params.id]);
-
+    const [rows] = await pool.query('SELECT * FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [id, req.user.id]);
     return res.status(200).json(successResponse('Job description updated successfully', { job: rows[0] }));
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
 async function deleteJob(req, res, next) {
   try {
-    const [result] = await pool.query(
-      'DELETE FROM job_descriptions WHERE id = ? AND user_id = ?',
-      [req.params.id, req.user.id],
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json(errorResponse('Job description not found', 404));
-    }
-
+    const id = positiveInteger(req.params.id, 'job id');
+    const [result] = await pool.query('DELETE FROM job_descriptions WHERE id = ? AND user_id = ?', [id, req.user.id]);
+    if (!result.affectedRows) return res.status(404).json(errorResponse('Job description not found'));
     return res.status(200).json(successResponse('Job description deleted successfully', { deleted: true }));
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { return next(error); }
 }
 
-module.exports = {
-  listJobs,
-  createJob,
-  getJob,
-  updateJob,
-  deleteJob,
-};
+module.exports = { listJobs, createJob, getJob, updateJob, deleteJob };

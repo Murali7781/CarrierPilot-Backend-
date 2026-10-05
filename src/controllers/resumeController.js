@@ -1,6 +1,7 @@
 const { getUserResumes, createResume, getResumeById, updateResume, deleteResume } = require('../services/resumeService');
 const { successResponse, errorResponse } = require('../utils/response');
 const { positiveInteger } = require('../utils/validation');
+const { importResumePdf } = require('../services/resumeImportService');
 
 async function listResumes(req, res, next) {
   try {
@@ -18,6 +19,14 @@ async function createResumeRecord(req, res, next) {
   } catch (error) {
     next(error);
   }
+}
+
+async function importResumeRecord(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json(errorResponse('No PDF reached CareerPilot. Choose a PDF in the upload area, then select Import PDF.', 400));
+    const result = await importResumePdf(req.user.id, req.file);
+    return res.status(201).json(successResponse('Resume PDF imported. Review the extracted fields before using it.', result));
+  } catch (error) { next(error); }
 }
 
 async function getResume(req, res, next) {
@@ -50,6 +59,7 @@ async function deleteResumeRecord(req, res, next) {
 module.exports = {
   listResumes,
   createResumeRecord,
+  importResumeRecord,
   getResume,
   updateResumeRecord,
   deleteResumeRecord,

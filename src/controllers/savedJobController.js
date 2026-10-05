@@ -20,11 +20,11 @@ async function saveJob(req, res, next) {
   try {
     const jobId = Number(req.body && (req.body.job_id || req.body.jobId));
     if (!Number.isInteger(jobId) || jobId <= 0) return res.status(400).json(errorResponse('job_id must be a positive integer', 400));
-    const [jobs] = await pool.query('SELECT id FROM job_descriptions WHERE id = ? LIMIT 1', [jobId]);
+    const [jobs] = await pool.query('SELECT id FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [jobId, req.user.id]);
     if (!jobs.length) return res.status(404).json(errorResponse('Job not found', 404));
-    await pool.query('INSERT INTO saved_jobs (user_id, job_id) VALUES (?, ?)', [req.user.id, jobId]);
+    const [result] = await pool.query('INSERT IGNORE INTO saved_jobs (user_id, job_id) VALUES (?, ?)', [req.user.id, jobId]);
     const [rows] = await pool.query('SELECT id, user_id, job_id, created_at FROM saved_jobs WHERE user_id = ? AND job_id = ?', [req.user.id, jobId]);
-    return res.status(201).json(successResponse('Job saved successfully', { savedJob: rows[0] }));
+    return res.status(result.affectedRows ? 201 : 200).json(successResponse(result.affectedRows ? 'Job saved successfully' : 'Job is already saved', { savedJob: rows[0] }));
   } catch (error) {
     next(error);
   }
