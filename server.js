@@ -12,7 +12,7 @@ async function startServer() {
     await testDatabaseConnection();
     await initializeDatabase();
 
-    app.listen(port, () => {
+    app.listen(port, '0.0.0.0', () => {
       console.log(`CareerPilot server running on port ${port}`);
       console.log('MySQL database connected successfully');
     });
