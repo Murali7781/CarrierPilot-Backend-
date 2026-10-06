@@ -1,5 +1,4 @@
 const fs = require('fs/promises');
-const pdfParse = require('pdf-parse');
 const {
   getUserResumes,
   createResume,
@@ -14,7 +13,7 @@ const { pool } = require('../config/db');
 const { removeResumeFile } = require('../utils/resumeFiles');
 const { successResponse, errorResponse } = require('../utils/response');
 const { positiveInteger } = require('../utils/validation');
-const { importResumePdf } = require('../services/resumeImportService');
+const { extractPdfText, importResumePdf } = require('../services/resumeImportService');
 
 async function getUploadedFileDetails(file) {
   if (!file) return null;
@@ -26,15 +25,7 @@ async function getUploadedFileDetails(file) {
     throw error;
   }
 
-  let extractedText;
-  try {
-    const parsedPdf = await pdfParse(buffer);
-    extractedText = parsedPdf.text.trim();
-  } catch {
-    const error = new Error('Unable to read this PDF. Please upload an unencrypted, readable PDF.');
-    error.statusCode = 400;
-    throw error;
-  }
+  const extractedText = await extractPdfText(buffer);
 
   const safeName = file.originalname.replace(/\\/g, '/').split('/').pop();
   return {

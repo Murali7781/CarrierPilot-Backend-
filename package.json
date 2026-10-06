@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "node --watch server.js",
     "test": "node --test"
   },
   "keywords": [],
@@ -21,10 +21,6 @@
     "multer": "^2.4.0",
     "mysql2": "^3.24.4",
     "openai": "6.49.0",
-    "pdf-parse": "^1.1.4",
     "pdfjs-dist": "5.4.149"
-  },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
   }
 }
