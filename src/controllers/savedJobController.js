@@ -24,8 +24,7 @@ async function saveJob(req, res, next) {
     if (!jobs.length) return res.status(404).json(errorResponse('Job not found', 404));
     const [result] = await pool.query('INSERT IGNORE INTO saved_jobs (user_id, job_id) VALUES (?, ?)', [req.user.id, jobId]);
     const [rows] = await pool.query('SELECT id, user_id, job_id, created_at FROM saved_jobs WHERE user_id = ? AND job_id = ?', [req.user.id, jobId]);
-    const created = result.affectedRows > 0;
-    return res.status(created ? 201 : 200).json(successResponse(created ? 'Job saved successfully' : 'Job was already saved', { savedJob: rows[0] }));
+    return res.status(result.affectedRows ? 201 : 200).json(successResponse(result.affectedRows ? 'Job saved successfully' : 'Job is already saved', { savedJob: rows[0] }));
   } catch (error) {
     next(error);
   }

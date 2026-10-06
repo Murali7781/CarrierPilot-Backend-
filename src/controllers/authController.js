@@ -4,96 +4,111 @@ const { pool } = require('../config/db');
 const { getJwtSecret } = require('../config/environment');
 const { successResponse, errorResponse } = require('../utils/response');
 
+const sessionCookieName = 'careerpilot_session';
+const sessionDurationMs = 8 * 60 * 60 * 1000;
+const tokenIssuer = 'careerpilot-api';
+const tokenAudience = 'careerpilot-web';
+
+function setSessionCookie(res, user) {
+  const token = jwt.sign(
+    { id: user.id, email: user.email, tokenVersion: Number(user.token_version) || 0 },
+    getJwtSecret(),
+    { expiresIn: '8h', algorithm: 'HS256', issuer: tokenIssuer, audience: tokenAudience },
+  );
+  res.cookie(sessionCookieName, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: sessionDurationMs,
+    path: '/api',
+  });
+}
+
+function getSafeUser(user) {
+  return { id: user.id, name: user.name, email: user.email, mobile: user.mobile || null };
+}
+
 async function register(req, res, next) {
   try {
-    const { name, email, password, mobile } = req.body || {};
+    const body = req.body || {};
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const normalizedEmail = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+    const password = typeof body.password === 'string' ? body.password : '';
+    const mobile = typeof body.mobile === 'string' ? body.mobile.trim() : '';
 
-    if (!name || !email || !password || !mobile) {
-      return res.status(400).json(errorResponse('Name, email, password, and mobile are required', 400));
+    if (!name || !normalizedEmail || !password) {
+      return res.status(400).json(errorResponse('Name, email, and password are required', 400));
     }
-
-    const normalizedEmail = String(email).trim().toLowerCase();
-
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    if (name.length > 100 || /[\u0000-\u001f\u007f]/.test(name)) {
+      return res.status(400).json(errorResponse('Name must be 1 to 100 valid characters', 400));
+    }
+    if (normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json(errorResponse('Please provide a valid email address', 400));
     }
-
-    if (String(password).length < 6) {
-      return res.status(400).json(errorResponse('Password must be at least 6 characters long', 400));
+    if (password.length < 12) {
+      return res.status(400).json(errorResponse('Use a password with at least 12 characters', 400));
+    }
+    if (Buffer.byteLength(password, 'utf8') > 72) {
+      return res.status(400).json(errorResponse('Password must be 72 bytes or fewer', 400));
+    }
+    if (mobile.length > 20) {
+      return res.status(400).json(errorResponse('Mobile number must be 20 characters or fewer', 400));
     }
 
-    const [existingUser] = await pool.query('SELECT id FROM users WHERE email = ? LIMIT 1', [normalizedEmail]);
-
-    if (existingUser.length > 0) {
-      return res.status(409).json(errorResponse('A user with this email already exists', 409));
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
+    const hashedPassword = await bcrypt.hash(password, 12);
     const [result] = await pool.query(
       'INSERT INTO users (name, email, password, mobile) VALUES (?, ?, ?, ?)',
-      [String(name).trim(), normalizedEmail, hashedPassword, String(mobile).trim()],
+      [name, normalizedEmail, hashedPassword, mobile || null],
     );
+    const user = { id: result.insertId, name, email: normalizedEmail, mobile: mobile || null, token_version: 0 };
+    setSessionCookie(res, user);
 
-    const [newUser] = await pool.query(
-      'SELECT id, name, email, mobile, created_at FROM users WHERE id = ? LIMIT 1',
-      [result.insertId],
-    );
-
-    const user = newUser[0];
-
-    return res.status(201).json(successResponse('User registered successfully', { user }));
+    return res.status(201).json(successResponse('Account created successfully', { user: getSafeUser(user) }));
   } catch (error) {
-    next(error);
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json(errorResponse('An account with this email already exists', 409));
+    }
+    return next(error);
   }
 }
 
 async function login(req, res, next) {
   try {
-    const { email, password } = req.body || {};
-
-    if (!email || !password) {
-      return res.status(400).json(errorResponse('Email and password are required', 400));
+    const email = typeof req.body?.email === 'string' ? req.body.email.trim().toLowerCase() : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    if (!email || !password || Buffer.byteLength(password, 'utf8') > 72) {
+      return res.status(401).json(errorResponse('Invalid email or password', 401));
     }
 
-    const normalizedEmail = String(email).trim().toLowerCase();
-
     const [users] = await pool.query(
-      'SELECT id, name, email, password, mobile FROM users WHERE email = ? LIMIT 1',
-      [normalizedEmail],
+      'SELECT id, name, email, password, mobile, token_version FROM users WHERE email = ? LIMIT 1',
+      [email],
     );
-
-    if (!users.length) {
+    if (!users.length || !(await bcrypt.compare(password, users[0].password))) {
       return res.status(401).json(errorResponse('Invalid email or password', 401));
     }
 
     const user = users[0];
-    const isPasswordCorrect = await bcrypt.compare(String(password), user.password);
-
-    if (!isPasswordCorrect) {
-      return res.status(401).json(errorResponse('Invalid email or password', 401));
-    }
-
-    const token = jwt.sign(
-      { id: user.id, email: user.email },
-      getJwtSecret(),
-      { expiresIn: '7d', algorithm: 'HS256' },
-    );
-
-    const safeUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      mobile: user.mobile,
-    };
-
-    return res.status(200).json(successResponse('Login successful', { token, user: safeUser }));
+    setSessionCookie(res, user);
+    return res.status(200).json(successResponse('Login successful', { user: getSafeUser(user) }));
   } catch (error) {
-    next(error);
+    return next(error);
   }
 }
 
-module.exports = {
-  register,
-  login,
-};
+async function logout(req, res, next) {
+  try {
+    await pool.query('UPDATE users SET token_version = token_version + 1 WHERE id = ?', [req.user.id]);
+    res.clearCookie(sessionCookieName, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/api',
+    });
+    return res.status(200).json(successResponse('Signed out successfully', { signedOut: true }));
+  } catch (error) {
+    return next(error);
+  }
+}
+
+module.exports = { register, login, logout };

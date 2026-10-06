@@ -1,85 +1,118 @@
-const { generateCareerAdvice } = require('../services/ai/aiService');
+const { generateCareerAdvice, generateResumeReview, getAiMode } = require('../services/ai/aiService');
 const { pool } = require('../config/db');
+const { analyzeResumeAgainstJob } = require('../services/jobMatchService');
+const { getUserSkillGaps } = require('../services/skillGapService');
 const { successResponse, errorResponse } = require('../utils/response');
+
+function parseJson(value) {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return value; }
+}
+
+async function getCandidateContext(userId) {
+  try {
+    const [[profiles], [resumes], [savedRoles], [applications], [practice], skillGaps] = await Promise.all([
+      pool.query(
+        `SELECT u.name, p.desired_roles, p.preferred_locations, p.work_modes
+         FROM users u LEFT JOIN candidate_preferences p ON p.user_id = u.id WHERE u.id = ? LIMIT 1`,
+        [userId],
+      ),
+      pool.query('SELECT title, professional_summary, skills FROM resumes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 3', [userId]),
+      pool.query(
+        `SELECT j.title, j.company, j.location FROM saved_jobs s JOIN job_descriptions j ON j.id = s.job_id
+         WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT 5`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT j.title, j.company, a.status, a.next_action_date FROM applications a JOIN job_descriptions j ON j.id = a.job_id
+         WHERE a.user_id = ? ORDER BY a.updated_at DESC LIMIT 5`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT s.title, s.type, s.status, j.title AS role_title FROM interview_sessions s
+         LEFT JOIN job_descriptions j ON j.id = s.job_id WHERE s.user_id = ? ORDER BY s.updated_at DESC LIMIT 3`,
+        [userId],
+      ),
+      getUserSkillGaps(userId, 5),
+    ]);
+    const profile = profiles[0] || {};
+    return JSON.stringify({
+      profile: { name: profile.name, targetRoles: parseJson(profile.desired_roles) || [], locations: parseJson(profile.preferred_locations) || [], workModes: parseJson(profile.work_modes) || [] },
+      resumes: resumes.map((resume) => ({ title: resume.title, summary: String(resume.professional_summary || '').slice(0, 500), skills: parseJson(resume.skills) || [] })),
+      savedRoles: savedRoles.map((role) => ({ title: role.title, company: role.company, location: role.location })),
+      applicationPipeline: applications.map((application) => ({ title: application.title, company: application.company, stage: application.status, followUp: application.next_action_date })),
+      interviewPractice: practice.map((session) => ({ title: session.title, type: session.type, status: session.status, role: session.role_title })),
+      skillGaps: skillGaps.map((gap) => ({ skill: gap.skill_name, role: gap.role_title, resume: gap.resume_title })),
+    }).slice(0, 4500);
+  } catch {
+    return '';
+  }
+}
 
 async function chatWithAi(req, res, next) {
   try {
-    const { message, history } = req.body || {};
+    const { message, history = [] } = req.body || {};
+    const context = req.body?.context;
+    const allowedContexts = new Set(['Career overview', 'Career profile', 'Resume builder', 'Role search', 'Saved roles', 'Application tracker', 'Skills', 'Interview practice', 'Interview practice session', 'Career workspace']);
 
-    const normalizedMessage = String(message || '').trim();
+    if (typeof message !== 'string') return res.status(400).json(errorResponse('Message must be text', 400));
+    const normalizedMessage = message.trim();
 
     if (!normalizedMessage) {
       return res.status(400).json(errorResponse('Message is required', 400));
     }
 
-    if (normalizedMessage.length > 4000) {
-      return res.status(400).json(errorResponse('Message must be 4000 characters or fewer', 400));
-    }
-
-    const [preferences, resumes, gaps, applications, jobs] = await Promise.all([
-      pool.query('SELECT desired_roles, preferred_locations FROM candidate_preferences WHERE user_id = ? LIMIT 1', [req.user.id]),
-      pool.query('SELECT title, skills, professional_summary FROM resumes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1', [req.user.id]),
-      pool.query("SELECT skill_name, priority FROM skill_gaps WHERE user_id = ? ORDER BY FIELD(LOWER(priority), 'high', 'medium', 'low'), updated_at DESC LIMIT 10", [req.user.id]),
-      pool.query('SELECT COUNT(*) AS total FROM applications WHERE user_id = ?', [req.user.id]),
-      pool.query("SELECT required_skills FROM job_descriptions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 20", [req.user.id]),
-    ]);
-
-    const parsePreference = (value) => {
-      if (Array.isArray(value)) return value;
-      if (typeof value !== 'string') return [];
-      try {
-        const parsed = JSON.parse(value);
-        return Array.isArray(parsed) ? parsed : [];
-      } catch {
-        return value.split(',').map((item) => item.trim()).filter(Boolean);
-      }
-    };
-
-    const validHistory = Array.isArray(history)
-      ? history.filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.text === 'string')
-        .slice(-12)
-        .map((item) => ({ role: item.role, text: item.text.slice(0, 4000) }))
-      : [];
-
-    const savedGaps = gaps[0];
-    const resumeSkills = new Set(parsePreference(resumes[0][0]?.skills).map((skill) => String(skill).trim().toLowerCase()));
-    const roleSkills = new Map();
-    for (const job of jobs[0]) {
-      for (const skill of parsePreference(job.required_skills)) {
-        const name = String(skill).trim();
-        const normalized = name.toLowerCase();
-        if (name && !resumeSkills.has(normalized)) roleSkills.set(normalized, (roleSkills.get(normalized) || { skill_name: name, priority: 'medium', count: 0 }));
-        if (roleSkills.has(normalized)) roleSkills.get(normalized).count += 1;
-      }
-    }
-    const derivedGaps = [...roleSkills.values()]
-      .sort((a, b) => b.count - a.count || a.skill_name.localeCompare(b.skill_name))
-      .slice(0, 10);
-    const knownGapNames = new Set(savedGaps.map((gap) => String(gap.skill_name).toLowerCase()));
-    const combinedGaps = [...savedGaps, ...derivedGaps.filter((gap) => !knownGapNames.has(gap.skill_name.toLowerCase()))].slice(0, 10);
-
+    const candidateContext = await getCandidateContext(req.user.id);
     const result = await generateCareerAdvice({
+      userId: req.user.id,
       message: normalizedMessage,
-      history: validHistory,
-      userContext: {
-        targetRole: parsePreference(preferences[0][0]?.desired_roles)[0] || '',
-        preferredLocation: parsePreference(preferences[0][0]?.preferred_locations)[0] || '',
-        resume: resumes[0][0] || null,
-        skillGaps: combinedGaps,
-        applicationCount: applications[0][0]?.total || 0,
-      },
+      history,
+      context: allowedContexts.has(context) ? context : '',
+      candidateContext,
     });
 
-    return res.status(200).json(successResponse('Career coach response generated', {
-      response: result.response,
-      mode: result.mode,
-      status: result.status,
-    }));
+    return res.status(200).json(successResponse('Career guidance generated', result));
   } catch (error) {
     next(error);
   }
 }
 
+function getAiStatus(req, res) {
+  const mode = getAiMode();
+  return res.status(200).json(successResponse('Career assistant status', {
+    mode,
+    message: mode === 'openai' ? 'An API key is configured; send a message to verify API access.' : 'Using local workspace-based guidance.',
+  }));
+}
+
+async function reviewResumeForRole(req, res, next) {
+  try {
+    const resumeId = Number(req.body?.resumeId);
+    const jobId = Number(req.body?.jobId);
+    if (!Number.isSafeInteger(resumeId) || resumeId < 1 || !Number.isSafeInteger(jobId) || jobId < 1) {
+      return res.status(400).json(errorResponse('Choose a valid resume and role to review.', 400));
+    }
+    const [[resumeRows], [jobRows]] = await Promise.all([
+      pool.query('SELECT * FROM resumes WHERE id = ? AND user_id = ? LIMIT 1', [resumeId, req.user.id]),
+      pool.query('SELECT * FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [jobId, req.user.id]),
+    ]);
+    if (!resumeRows.length) return res.status(404).json(errorResponse('Resume not found in your workspace.', 404));
+    if (!jobRows.length) return res.status(404).json(errorResponse('Role not found in your workspace.', 404));
+    const resume = resumeRows[0];
+    const job = jobRows[0];
+    resume.experience = parseJson(resume.experience) || [];
+    resume.skills = parseJson(resume.skills) || [];
+    resume.projects = parseJson(resume.projects) || [];
+    job.required_skills = parseJson(job.required_skills) || [];
+    job.preferred_skills = parseJson(job.preferred_skills) || [];
+    const match = await analyzeResumeAgainstJob({ userId: req.user.id, resumeId, jobId, resumeRecord: resume, jobRecord: job });
+    const review = await generateResumeReview({ resume, job, match, userId: req.user.id });
+    return res.status(200).json(successResponse('Resume review completed.', { review, match }));
+  } catch (error) { return next(error); }
+}
+
 module.exports = {
   chatWithAi,
+  getAiStatus,
+  reviewResumeForRole,
 };

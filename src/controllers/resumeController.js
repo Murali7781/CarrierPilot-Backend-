@@ -12,8 +12,9 @@ const {
 const { analyzeResume } = require('../services/resumeAnalysisService');
 const { pool } = require('../config/db');
 const { removeResumeFile } = require('../utils/resumeFiles');
-const { successResponse } = require('../utils/response');
+const { successResponse, errorResponse } = require('../utils/response');
 const { positiveInteger } = require('../utils/validation');
+const { importResumePdf } = require('../services/resumeImportService');
 
 async function getUploadedFileDetails(file) {
   if (!file) return null;
@@ -71,6 +72,14 @@ async function createResumeRecord(req, res, next) {
     if (req.file) await removeUploadedFile(req.file.path);
     next(error);
   }
+}
+
+async function importResumeRecord(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json(errorResponse('No PDF reached CareerPilot. Choose a PDF in the upload area, then select Import PDF.', 400));
+    const result = await importResumePdf(req.user.id, req.file);
+    return res.status(201).json(successResponse('Resume PDF imported. Review the extracted fields before using it.', result));
+  } catch (error) { next(error); }
 }
 
 async function getResume(req, res, next) {
@@ -169,6 +178,7 @@ async function analyzeResumeForJob(req, res, next) {
 module.exports = {
   listResumes,
   createResumeRecord,
+  importResumeRecord,
   getResume,
   updateResumeRecord,
   deleteResumeRecord,
