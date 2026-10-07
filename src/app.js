@@ -16,27 +16,38 @@ const applicationRoutes = require('./routes/applicationRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const errorMiddleware = require('./middleware/errorMiddleware');
 
-const defaultAllowedOrigins = process.env.NODE_ENV === 'production'
-  ? ['https://carrirepilot-frontend.vercel.app']
-  : ['http://localhost:5173', 'http://127.0.0.1:5173'];
-
-const allowedOrigins = (process.env.CLIENT_ORIGINS
-  ? process.env.CLIENT_ORIGINS.split(',')
-  : defaultAllowedOrigins)
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'https://carrirepilot-frontend.vercel.app',
+  ...(process.env.CLIENT_ORIGINS || '').split(','),
+]
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-const app = express();
-app.use(cors({
+const vercelPreviewOriginPattern =
+  /^https:\/\/carrirepilot-frontend-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-murali7781s-projects\.vercel\.app$/;
+
+const corsOptions = {
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    if (
+      !origin ||
+      allowedOrigins.includes(origin) ||
+      vercelPreviewOriginPattern.test(origin)
+    ) {
+      return callback(null, true);
+    }
     const error = new Error('Origin is not allowed by the API CORS policy.');
     error.statusCode = 403;
     return callback(error);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-}));
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+const app = express();
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.disable('x-powered-by');
