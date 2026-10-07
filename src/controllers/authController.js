@@ -18,7 +18,7 @@ function setSessionCookie(res, user) {
   res.cookie(sessionCookieName, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     maxAge: sessionDurationMs,
     path: '/api',
   });
@@ -102,7 +102,7 @@ async function logout(req, res, next) {
     res.clearCookie(sessionCookieName, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       path: '/api',
     });
     return res.status(200).json(successResponse('Signed out successfully', { signedOut: true }));
