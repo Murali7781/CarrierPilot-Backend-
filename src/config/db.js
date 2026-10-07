@@ -1,9 +1,12 @@
 const mysql = require('mysql2/promise');
+const { lookup } = require('node:dns/promises');
 
 const requiredEnvironmentVariables = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
 
 function getDatabaseConfig() {
-  const missingVariables = requiredEnvironmentVariables.filter((variable) => !process.env[variable]);
+  const missingVariables = requiredEnvironmentVariables.filter(
+    (variable) => !process.env[variable]?.trim(),
+  );
 
   if (missingVariables.length > 0) {
     throw new Error(`Missing required database environment variables: ${missingVariables.join(', ')}`);
@@ -16,22 +19,71 @@ function getDatabaseConfig() {
   }
 
   return {
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
+    host: process.env.DB_HOST.trim(),
+    user: process.env.DB_USER.trim(),
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME,
+    database: process.env.DB_NAME.trim(),
     port,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
     charset: 'utf8mb4',
     ssl: {
+      // Aiven requires TLS; disabling certificate verification matches its
+      // "required" mode when the service CA certificate is not configured.
       rejectUnauthorized: false,
     },
   };
 }
 
-const pool = mysql.createPool(getDatabaseConfig());
+let poolPromise;
+
+async function getPool() {
+  if (!poolPromise) {
+    poolPromise = (async () => {
+      const config = getDatabaseConfig();
+      console.info('MySQL connection configuration:', {
+        DB_HOST: config.host,
+        DB_PORT: config.port,
+        DB_USER: config.user,
+        DB_NAME: config.database,
+      });
+
+      try {
+        await lookup(config.host);
+      } catch (error) {
+        console.error(`DNS lookup failed for DB_HOST: ${config.host}`);
+        const dnsError = new Error(
+          `DNS lookup failed for DB_HOST ${config.host}${error.code ? ` (${error.code})` : ''}.`,
+          { cause: error },
+        );
+        dnsError.code = error.code;
+        throw dnsError;
+      }
+
+      return mysql.createPool(config);
+    })().catch((error) => {
+      poolPromise = undefined;
+      throw error;
+    });
+  }
+
+  return poolPromise;
+}
+
+const pool = {
+  query(...args) {
+    return getPool().then((connectionPool) => connectionPool.query(...args));
+  },
+  getConnection() {
+    return getPool().then((connectionPool) => connectionPool.getConnection());
+  },
+  async end() {
+    if (!poolPromise) return;
+    const connectionPool = await poolPromise;
+    return connectionPool.end();
+  },
+};
 
 async function testDatabaseConnection() {
   const [rows] = await pool.query('SELECT 1 AS ok');
