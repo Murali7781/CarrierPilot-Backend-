@@ -6,4 +6,4 @@ logs/
 *.log
 uploads/
 
-server/.env.example
+.env.example
