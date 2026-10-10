@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { pool } = require('../config/db');
 const { getJwtSecret } = require('../config/environment');
 const { successResponse, errorResponse } = require('../utils/response');
+const { isValidMobileNumber } = require('../utils/validation');
 
 const sessionCookieName = 'careerpilot_session';
 const sessionDurationMs = 8 * 60 * 60 * 1000;
@@ -11,7 +12,12 @@ const tokenAudience = 'careerpilot-web';
 
 function setSessionCookie(res, user) {
   const token = jwt.sign(
-    { id: user.id, email: user.email, tokenVersion: Number(user.token_version) || 0 },
+    {
+      id: user.id,
+      email: user.email,
+      role: user.role || 'candidate',
+      tokenVersion: Number(user.token_version) || 0,
+    },
     getJwtSecret(),
     { expiresIn: '8h', algorithm: 'HS256', issuer: tokenIssuer, audience: tokenAudience },
   );
@@ -25,7 +31,13 @@ function setSessionCookie(res, user) {
 }
 
 function getSafeUser(user) {
-  return { id: user.id, name: user.name, email: user.email, mobile: user.mobile || null };
+  return {
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    mobile: user.mobile || null,
+    role: user.role || 'candidate',
+  };
 }
 
 async function register(req, res, next) {
@@ -34,6 +46,9 @@ async function register(req, res, next) {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     const normalizedEmail = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
     const password = typeof body.password === 'string' ? body.password : '';
+    if (body.mobile != null && typeof body.mobile !== 'string') {
+      return res.status(400).json(errorResponse('Mobile number must be text.', 400));
+    }
     const mobile = typeof body.mobile === 'string' ? body.mobile.trim() : '';
 
     if (!name || !normalizedEmail || !password) {
@@ -51,16 +66,29 @@ async function register(req, res, next) {
     if (Buffer.byteLength(password, 'utf8') > 72) {
       return res.status(400).json(errorResponse('Password must be 72 bytes or fewer', 400));
     }
+    if (typeof body.confirmPassword !== 'string' || body.confirmPassword !== password) {
+      return res.status(400).json(errorResponse('Password confirmation does not match.', 400));
+    }
     if (mobile.length > 20) {
       return res.status(400).json(errorResponse('Mobile number must be 20 characters or fewer', 400));
+    }
+    if (!isValidMobileNumber(mobile)) {
+      return res.status(400).json(errorResponse('Enter a valid mobile number with 7 to 15 digits.', 400));
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
     const [result] = await pool.query(
-      'INSERT INTO users (name, email, password, mobile) VALUES (?, ?, ?, ?)',
-      [name, normalizedEmail, hashedPassword, mobile || null],
+      'INSERT INTO users (name, email, password, mobile, role) VALUES (?, ?, ?, ?, ?)',
+      [name, normalizedEmail, hashedPassword, mobile || null, 'candidate'],
     );
-    const user = { id: result.insertId, name, email: normalizedEmail, mobile: mobile || null, token_version: 0 };
+    const user = {
+      id: result.insertId,
+      name,
+      email: normalizedEmail,
+      mobile: mobile || null,
+      role: 'candidate',
+      token_version: 0,
+    };
     setSessionCookie(res, user);
 
     return res.status(201).json(successResponse('Account created successfully', { user: getSafeUser(user) }));
@@ -81,7 +109,7 @@ async function login(req, res, next) {
     }
 
     const [users] = await pool.query(
-      'SELECT id, name, email, password, mobile, token_version FROM users WHERE email = ? LIMIT 1',
+      'SELECT id, name, email, password, mobile, role, token_version FROM users WHERE email = ? LIMIT 1',
       [email],
     );
     if (!users.length || !(await bcrypt.compare(password, users[0].password))) {
@@ -89,6 +117,9 @@ async function login(req, res, next) {
     }
 
     const user = users[0];
+    if (!['candidate', 'recruiter', 'admin'].includes(String(user.role || '').toLowerCase())) {
+      return res.status(403).json(errorResponse('This account role is not permitted to sign in. Contact support.', 403));
+    }
     setSessionCookie(res, user);
     return res.status(200).json(successResponse('Login successful', { user: getSafeUser(user) }));
   } catch (error) {

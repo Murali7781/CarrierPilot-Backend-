@@ -1,5 +1,6 @@
 const { pool } = require('../config/db');
 const { successResponse, errorResponse } = require('../utils/response');
+const { positiveInteger } = require('../utils/validation');
 
 const statuses = ['applied', 'screening', 'interview', 'offer', 'rejected', 'withdrawn'];
 
@@ -11,6 +12,10 @@ function validateDate(value, field) {
 
 async function listApplications(req, res, next) {
   try {
+    const page = req.query.page === undefined ? 1 : positiveInteger(req.query.page, 'page');
+    const limit = req.query.limit === undefined ? 20 : positiveInteger(req.query.limit, 'limit');
+    if (page > 100000) return res.status(400).json(errorResponse('page must be 100,000 or fewer'));
+    if (limit > 100) return res.status(400).json(errorResponse('limit must be 100 or fewer'));
     const values = [req.user.id];
     let where = 'a.user_id = ?';
     if (req.query.status) {
@@ -18,13 +23,37 @@ async function listApplications(req, res, next) {
       where += ' AND a.status = ?';
       values.push(req.query.status);
     }
-    const [rows] = await pool.query(
-      `SELECT a.*, j.title AS job_title, j.company, j.location, j.source_url FROM applications a
-       JOIN job_descriptions j ON j.id = a.job_id
-       WHERE ${where} ORDER BY a.updated_at DESC`,
-      values,
-    );
-    return res.status(200).json(successResponse('Applications retrieved successfully', { applications: rows }));
+    const offset = (page - 1) * limit;
+    const [[rows], [summaryRows], [countRows]] = await Promise.all([
+      pool.query(
+        `SELECT a.id, a.job_id, a.status, a.notes, a.next_action_date, a.interview_date,
+                a.created_at, a.updated_at, j.title AS job_title, j.company, j.location, j.source_url
+         FROM applications a
+         JOIN job_descriptions j ON j.id = a.job_id
+         WHERE ${where} ORDER BY a.updated_at DESC, a.id DESC LIMIT ? OFFSET ?`,
+        [...values, limit, offset],
+      ),
+      pool.query(
+        `SELECT COUNT(*) AS total,
+                COALESCE(SUM(status NOT IN ('offer', 'rejected', 'withdrawn')), 0) AS active,
+                COALESCE(SUM(status = 'interview'), 0) AS interviews,
+                COALESCE(SUM(status = 'offer'), 0) AS offers
+         FROM applications WHERE user_id = ?`,
+        [req.user.id],
+      ),
+      pool.query(`SELECT COUNT(*) AS total FROM applications a WHERE ${where}`, values),
+    ]);
+    const total = Number(countRows[0].total) || 0;
+    return res.status(200).json(successResponse('Applications retrieved successfully', {
+      applications: rows,
+      summary: {
+        total: Number(summaryRows[0].total) || 0,
+        active: Number(summaryRows[0].active) || 0,
+        interviews: Number(summaryRows[0].interviews) || 0,
+        offers: Number(summaryRows[0].offers) || 0,
+      },
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    }));
   } catch (error) {
     next(error);
   }

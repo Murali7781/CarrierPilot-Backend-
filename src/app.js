@@ -15,26 +15,13 @@ const savedJobRoutes = require('./routes/savedJobRoutes');
 const applicationRoutes = require('./routes/applicationRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const errorMiddleware = require('./middleware/errorMiddleware');
-
-const allowedOrigins = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'https://carrirepilot-frontend.vercel.app',
-  ...(process.env.CLIENT_ORIGINS || '').split(','),
-]
-  .map((origin) => origin.trim())
-  .filter(Boolean);
-
-const vercelPreviewOriginPattern =
-  /^https:\/\/carrirepilot-frontend-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-murali7781s-projects\.vercel\.app$/;
+const csrfProtection = require('./middleware/csrfProtection');
+const { isAllowedOrigin } = require('./config/originPolicy');
+const { errorResponse } = require('./utils/response');
 
 const corsOptions = {
   origin(origin, callback) {
-    if (
-      !origin ||
-      allowedOrigins.includes(origin) ||
-      vercelPreviewOriginPattern.test(origin)
-    ) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
     const error = new Error('Origin is not allowed by the API CORS policy.');
@@ -48,6 +35,7 @@ const corsOptions = {
 
 const app = express();
 app.use(cors(corsOptions));
+app.use(csrfProtection);
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 app.disable('x-powered-by');
@@ -62,6 +50,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'CareerPilot backend is running',
+    data: {},
   });
 });
 
@@ -80,10 +69,7 @@ app.use('/api/applications', applicationRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 
 app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found',
-  });
+  res.status(404).json(errorResponse('Route not found.', 404));
 });
 
 app.use(errorMiddleware);

@@ -2,6 +2,7 @@ const { pool } = require('../config/db');
 const { successResponse, errorResponse } = require('../utils/response');
 const { positiveInteger } = require('../utils/validation');
 const { generateInterviewQuestions, reviewInterviewAnswer } = require('../services/ai/aiService');
+const { createInterviewResumeProfile } = require('../services/interviewResumeProfile');
 
 const interviewTypes = new Set(['technical', 'behavioral', 'hr', 'mixed']);
 const interviewStatuses = new Set(['active', 'completed', 'archived']);
@@ -35,6 +36,7 @@ async function createInterview(req, res, next) {
 
     const jobId = rawJobId ? positiveInteger(rawJobId, 'job_id') : null;
     const resumeId = rawResumeId ? positiveInteger(rawResumeId, 'resume_id') : null;
+    if (!resumeId) return res.status(400).json(errorResponse('Select a resume so the practice questions can be tailored to your actual experience and skills.', 400));
     let job = null;
     if (jobId) {
       const [rows] = await pool.query('SELECT id, title, company, description, required_skills, preferred_skills FROM job_descriptions WHERE id = ? AND user_id = ? LIMIT 1', [jobId, req.user.id]);
@@ -42,7 +44,7 @@ async function createInterview(req, res, next) {
       [job] = rows;
     }
     if (resumeId) {
-      const [rows] = await pool.query('SELECT id, title, professional_summary, skills, experience FROM resumes WHERE id = ? AND user_id = ? LIMIT 1', [resumeId, req.user.id]);
+      const [rows] = await pool.query('SELECT id FROM resumes WHERE id = ? AND user_id = ? LIMIT 1', [resumeId, req.user.id]);
       if (!rows.length) return res.status(404).json(errorResponse('The selected resume was not found in your workspace.', 404));
     }
 
@@ -57,18 +59,30 @@ async function createInterview(req, res, next) {
 
 async function listInterviews(req, res, next) {
   try {
-    const [rows] = await pool.query(
-      `SELECT s.id, s.user_id, s.job_id, s.resume_id, s.type, s.title, s.status, s.created_at, s.updated_at,
-              j.title AS job_title, j.company AS job_company, r.title AS resume_title,
-              (SELECT COUNT(*) FROM interview_questions q WHERE q.interview_id = s.id) AS question_count,
-              (SELECT COUNT(*) FROM interview_answers a WHERE a.interview_id = s.id) AS answer_count
-       FROM interview_sessions s
-       LEFT JOIN job_descriptions j ON j.id = s.job_id AND j.user_id = s.user_id
-       LEFT JOIN resumes r ON r.id = s.resume_id AND r.user_id = s.user_id
-       WHERE s.user_id = ? ORDER BY s.updated_at DESC, s.id DESC`,
-      [req.user.id],
-    );
-    return res.status(200).json(successResponse('Interviews retrieved successfully', { interviews: rows }));
+    const page = req.query.page === undefined ? 1 : positiveInteger(req.query.page, 'page');
+    const limit = req.query.limit === undefined ? 20 : positiveInteger(req.query.limit, 'limit');
+    if (page > 100000) return res.status(400).json(errorResponse('page must be 100,000 or fewer'));
+    if (limit > 100) return res.status(400).json(errorResponse('limit must be 100 or fewer'));
+    const offset = (page - 1) * limit;
+    const [[rows], [countRows]] = await Promise.all([
+      pool.query(
+        `SELECT s.id, s.job_id, s.resume_id, s.type, s.title, s.status, s.created_at, s.updated_at,
+                j.title AS job_title, j.company AS job_company, r.title AS resume_title,
+                (SELECT COUNT(*) FROM interview_questions q WHERE q.interview_id = s.id) AS question_count,
+                (SELECT COUNT(*) FROM interview_answers a WHERE a.interview_id = s.id) AS answer_count
+         FROM interview_sessions s
+         LEFT JOIN job_descriptions j ON j.id = s.job_id AND j.user_id = s.user_id
+         LEFT JOIN resumes r ON r.id = s.resume_id AND r.user_id = s.user_id
+         WHERE s.user_id = ? ORDER BY s.updated_at DESC, s.id DESC LIMIT ? OFFSET ?`,
+        [req.user.id, limit, offset],
+      ),
+      pool.query('SELECT COUNT(*) AS total FROM interview_sessions WHERE user_id = ?', [req.user.id]),
+    ]);
+    const total = Number(countRows[0].total) || 0;
+    return res.status(200).json(successResponse('Interviews retrieved successfully', {
+      interviews: rows,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    }));
   } catch (error) { next(error); }
 }
 
@@ -101,9 +115,21 @@ async function generateQuestions(req, res, next) {
     }
     let resume = null;
     if (interview.resume_id) {
-      const [resumes] = await pool.query('SELECT title, professional_summary, skills, experience FROM resumes WHERE id = ? AND user_id = ? LIMIT 1', [interview.resume_id, req.user.id]);
-      if (resumes.length) resume = resumes[0];
+      const [resumes] = await pool.query(
+        `SELECT title, professional_summary, skills, experience, education, projects,
+                certifications, extracted_text
+         FROM resumes WHERE id = ? AND user_id = ? LIMIT 1`,
+        [interview.resume_id, req.user.id],
+      );
+      if (resumes.length) {
+        const [skillEntries] = await pool.query(
+          'SELECT skill_name FROM resume_skills WHERE resume_id = ? ORDER BY skill_name ASC',
+          [interview.resume_id],
+        );
+        resume = createInterviewResumeProfile({ ...resumes[0], skill_entries: skillEntries });
+      }
     }
+    if (!resume) return res.status(400).json(errorResponse('Select a resume before generating tailored interview questions.', 400));
     const [recentRows] = await pool.query(
       `SELECT q.question_text FROM interview_questions q
        INNER JOIN interview_sessions previous ON previous.id = q.interview_id
@@ -119,9 +145,10 @@ async function generateQuestions(req, res, next) {
       jobDescription: job?.description,
       requiredSkills: parseStoredList(job?.required_skills),
       preferredSkills: parseStoredList(job?.preferred_skills),
-      resumeSummary: resume?.professional_summary,
-      resumeSkills: parseStoredList(resume?.skills),
-      experience: parseStoredList(resume?.experience),
+      resumeSummary: resume.summary,
+      resumeSkills: resume.skills,
+      experience: resume.experience,
+      resumeProfile: resume,
       previousQuestions: recentRows.map((row) => row.question_text),
     });
     const questions = generated.questions;
@@ -140,7 +167,18 @@ async function generateQuestions(req, res, next) {
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
     const [created] = await pool.query('SELECT id, interview_id, question_text, question_type, metadata, created_at FROM interview_questions WHERE interview_id = ? ORDER BY id ASC', [sessionId]);
-    return res.status(201).json(successResponse('Practice questions generated.', { questions: created, mode: generated.mode, notice: generated.notice }));
+    return res.status(201).json(successResponse('Practice questions generated from your resume and role context.', {
+      questions: created,
+      mode: generated.mode,
+      notice: generated.notice,
+      resumeAnalysis: {
+        summary: resume.summary,
+        skills: resume.skills,
+        experienceYears: resume.experienceYears,
+        experienceLevel: resume.experienceLevel,
+        evidenceCounts: resume.evidenceCounts,
+      },
+    }));
   } catch (error) { next(error); }
 }
 

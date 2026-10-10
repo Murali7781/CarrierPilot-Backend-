@@ -1,16 +1,35 @@
 const { pool } = require('../config/db');
 const { successResponse, errorResponse } = require('../utils/response');
+const { positiveInteger } = require('../utils/validation');
 
 async function listSavedJobs(req, res, next) {
   try {
-    const [rows] = await pool.query(
-      `SELECT sj.id, sj.job_id, sj.created_at, j.title, j.company, j.description,
-              j.required_skills, j.preferred_skills, j.experience_requirements
-       FROM saved_jobs sj JOIN job_descriptions j ON j.id = sj.job_id
-       WHERE sj.user_id = ? ORDER BY sj.created_at DESC`,
-      [req.user.id],
-    );
-    return res.status(200).json(successResponse('Saved jobs retrieved successfully', { jobs: rows }));
+    const page = req.query.page === undefined ? 1 : positiveInteger(req.query.page, 'page');
+    const limit = req.query.limit === undefined ? 20 : positiveInteger(req.query.limit, 'limit');
+    if (page > 100000) return res.status(400).json(errorResponse('page must be 100,000 or fewer'));
+    if (limit > 100) return res.status(400).json(errorResponse('limit must be 100 or fewer'));
+    const offset = (page - 1) * limit;
+    const where = ['sj.user_id = ?'];
+    const values = [req.user.id];
+    if (req.query.job_id !== undefined) {
+      where.push('sj.job_id = ?');
+      values.push(positiveInteger(req.query.job_id, 'job_id'));
+    }
+    const whereSql = where.join(' AND ');
+    const [[rows], [countRows]] = await Promise.all([
+      pool.query(
+        `SELECT sj.id, sj.job_id, sj.created_at, j.title, j.company
+         FROM saved_jobs sj JOIN job_descriptions j ON j.id = sj.job_id
+         WHERE ${whereSql} ORDER BY sj.created_at DESC, sj.id DESC LIMIT ? OFFSET ?`,
+        [...values, limit, offset],
+      ),
+      pool.query(`SELECT COUNT(*) AS total FROM saved_jobs sj WHERE ${whereSql}`, values),
+    ]);
+    const total = Number(countRows[0].total) || 0;
+    return res.status(200).json(successResponse('Saved jobs retrieved successfully', {
+      jobs: rows,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    }));
   } catch (error) {
     next(error);
   }

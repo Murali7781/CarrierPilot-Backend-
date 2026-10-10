@@ -28,11 +28,9 @@ function getDatabaseConfig() {
     connectionLimit: 10,
     queueLimit: 0,
     charset: 'utf8mb4',
-    ssl: {
-      // Aiven requires TLS; disabling certificate verification matches its
-      // "required" mode when the service CA certificate is not configured.
-      rejectUnauthorized: false,
-    },
+    ssl: process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: true }
+      : undefined,
   };
 }
 
@@ -102,6 +100,7 @@ async function initializeDatabase() {
       name VARCHAR(100) NOT NULL,
       email VARCHAR(255) NOT NULL UNIQUE,
       password VARCHAR(255) NOT NULL,
+      role ENUM('candidate', 'recruiter', 'admin') NOT NULL DEFAULT 'candidate',
       mobile VARCHAR(20),
       token_version INT UNSIGNED NOT NULL DEFAULT 0,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -323,6 +322,19 @@ async function initializeDatabase() {
     await pool.query(query);
   }
 
+  const [roleColumn] = await pool.query(
+    `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'role' LIMIT 1`,
+  );
+
+  if (!roleColumn.length) {
+    await pool.query(
+      "ALTER TABLE users ADD COLUMN role ENUM('candidate', 'recruiter', 'admin') NOT NULL DEFAULT 'candidate'",
+    );
+  }
+
+  await pool.query("UPDATE users SET role = 'candidate' WHERE role IS NULL OR role = ''");
+
   const resumeColumns = {
     target_role: 'VARCHAR(150) NULL',
     file_path: 'VARCHAR(500) NULL',
@@ -387,49 +399,6 @@ async function initializeDatabase() {
   } catch (error) {
     if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
-
-  const [users] = await pool.query('SELECT id FROM users');
-  const starterJobs = [
-    ['Frontend Engineer', 'Northstar Labs', 'Build and maintain responsive, accessible web experiences with React and modern JavaScript. Partner with product designers and backend engineers to turn requirements into reusable UI, integrate APIs, write component and browser tests, investigate production issues, and improve page performance. Required: React, JavaScript, HTML, CSS, accessibility, API integration, Git, and testing. Preferred: TypeScript and design systems.', ['React', 'JavaScript', 'HTML', 'CSS', 'Accessibility', 'Testing'], ['TypeScript', 'Design systems'], '2+ years'],
-    ['Product Designer', 'Orbit Studio', 'Lead product design from early discovery through detailed delivery. Interview users, map workflows, create wireframes and interactive prototypes, test concepts, maintain accessible design patterns, and work with engineers through implementation. Required: Figma, user research, interaction design, prototyping, accessibility, and communication. Preferred: design systems and usability testing.', ['Figma', 'UX research', 'Interaction design', 'Prototyping', 'Accessibility'], ['Design systems', 'Usability testing'], '2+ years'],
-    ['Backend Developer', 'SignalWorks', 'Design, implement, and operate dependable Node.js services and APIs. Model relational data, apply authentication and validation, write automated tests, review changes, monitor service health, and work with frontend and product teams. Required: Node.js, API design, SQL, authentication, testing, Git, and debugging. Preferred: Docker and cloud deployment.', ['Node.js', 'API design', 'SQL', 'Authentication', 'Testing'], ['Docker', 'Cloud'], '1+ year'],
-    ['Data Analyst', 'Greenline Mobility', 'Analyze operational and product data to help teams make better decisions. Write documented SQL, validate data quality, build clear dashboards, investigate changes in key measures, and present practical findings to non-technical partners. Required: SQL, spreadsheets, data visualization, analytical reasoning, and communication. Preferred: Python and Tableau.', ['SQL', 'Spreadsheets', 'Data visualization', 'Communication'], ['Python', 'Tableau'], '1+ year'],
-  ];
-
-  for (const user of users) {
-    const [existingJobs] = await pool.query('SELECT id FROM job_descriptions WHERE user_id = ? LIMIT 1', [user.id]);
-    if (existingJobs.length) continue;
-    await pool.query(
-      `INSERT INTO job_descriptions
-       (user_id, title, company, description, required_skills, preferred_skills, experience_requirements, source)
-       VALUES ?`,
-      [starterJobs.map(([title, company, description, required, preferred, experience]) => [
-        user.id,
-        title,
-        company,
-        description,
-        JSON.stringify(required),
-        JSON.stringify(preferred),
-        experience,
-        'demo',
-      ])],
-    );
-  }
-
-  await pool.query(
-    `UPDATE job_descriptions SET description = CASE title
-       WHEN 'Frontend Engineer' THEN ? WHEN 'Product Designer' THEN ?
-       WHEN 'Backend Developer' THEN ? WHEN 'Data Analyst' THEN ? ELSE description END
-     WHERE source = 'demo' AND (
-       (title = 'Frontend Engineer' AND description = 'Build accessible React interfaces and collaborate with product and design teams.') OR
-       (title = 'Product Designer' AND description = 'Design user-centred experiences from discovery through polished delivery.') OR
-       (title = 'Backend Developer' AND description = 'Create reliable Node.js services and APIs backed by relational data.') OR
-       (title = 'Data Analyst' AND description = 'Turn operational data into clear insights and practical decisions.')
-     )`,
-    [
-      starterJobs[0][2], starterJobs[1][2], starterJobs[2][2], starterJobs[3][2],
-    ],
-  );
 
   const ensureColumn = async (tableName, columnName, definition) => {
     const [columns] = await pool.query(
@@ -501,6 +470,7 @@ async function initializeDatabase() {
 
 module.exports = {
   pool,
+  getDatabaseConfig,
   testDatabaseConnection,
   initializeDatabase,
 };

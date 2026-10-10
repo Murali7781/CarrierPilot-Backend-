@@ -13,24 +13,41 @@ function getKeywords(text) {
 }
 
 function analyzeResume(resume, jobDescription) {
+  const extractedText = String(resume.extracted_text || '');
+  const summary = String(resume.professional_summary || '');
+  const skills = Array.isArray(resume.skills)
+    ? resume.skills
+    : typeof resume.skills === 'string'
+      ? [resume.skills]
+      : [];
+  const experience = Array.isArray(resume.experience) ? resume.experience : [];
+  const education = Array.isArray(resume.education) ? resume.education : [];
   const sourceText = [
-    resume.extracted_text || '',
-    resume.professional_summary || '',
-    ...(Array.isArray(resume.skills) ? resume.skills : []),
-    ...(Array.isArray(resume.experience) ? resume.experience.map((entry) => JSON.stringify(entry)) : []),
-    ...(Array.isArray(resume.education) ? resume.education.map((entry) => JSON.stringify(entry)) : []),
+    extractedText,
+    JSON.stringify(resume.personal_info || {}),
+    summary,
+    ...skills,
+    ...experience.map((entry) => JSON.stringify(entry)),
+    ...education.map((entry) => JSON.stringify(entry)),
+    `projects ${Array.isArray(resume.projects) ? resume.projects.map((entry) => JSON.stringify(entry)).join(' ') : ''}`,
+    `certifications ${Array.isArray(resume.certifications) ? resume.certifications.map((entry) => JSON.stringify(entry)).join(' ') : ''}`,
   ].join(' ');
   const resumeText = sourceText.toLowerCase();
   const keywords = getKeywords(jobDescription);
   const matchedKeywords = keywords.filter((keyword) => resumeText.includes(keyword));
   const missingKeywords = keywords.filter((keyword) => !resumeText.includes(keyword));
   const wordCount = sourceText.trim().split(/\s+/).filter(Boolean).length;
+  const hasResumeContent = (items) => items.some((item) =>
+    item && typeof item === 'object'
+      ? Object.values(item).some((value) => String(value || '').trim())
+      : String(item || '').trim(),
+  );
   const checks = [
     { label: 'Contact details', passed: /[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(sourceText), weight: 10 },
-    { label: 'Professional summary', passed: /summary|profile|objective/i.test(sourceText), weight: 10 },
-    { label: 'Work experience', passed: /experience|employment|work history/i.test(sourceText), weight: 15 },
-    { label: 'Education', passed: /education|university|college|degree/i.test(sourceText), weight: 10 },
-    { label: 'Skills', passed: /skills|technologies|technical/i.test(sourceText), weight: 10 },
+    { label: 'Professional summary', passed: Boolean(summary.trim()) || /summary|profile|objective/i.test(extractedText), weight: 10 },
+    { label: 'Work experience', passed: hasResumeContent(experience) || /experience|employment|work history/i.test(extractedText), weight: 15 },
+    { label: 'Education', passed: hasResumeContent(education) || /education|university|college|degree/i.test(extractedText), weight: 10 },
+    { label: 'Skills', passed: hasResumeContent(skills) || /skills|technologies|technical/i.test(extractedText), weight: 10 },
     { label: 'Resume detail', passed: wordCount >= 150, weight: 10 },
   ];
   const keywordScore = keywords.length

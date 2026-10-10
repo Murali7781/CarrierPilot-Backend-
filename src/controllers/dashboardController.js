@@ -5,7 +5,7 @@ const { getUserSkillGaps } = require('../services/skillGapService');
 async function getDashboardSummary(req, res, next) {
   try {
     const userId = req.user.id;
-    const [profileRows, countRows, pipelineRows, applicationActivity, savedRoles, upcomingApplications, upcomingSessions, skillGaps, recentActivity] = await Promise.all([
+    const [profileRows, countRows, pipelineRows, applicationActivity, savedRoles, skillGaps, recentActivity] = await Promise.all([
       pool.query(
         `SELECT u.id, u.name, u.email, u.mobile, u.created_at, u.updated_at,
                 p.desired_roles, p.preferred_locations, p.work_modes
@@ -38,18 +38,6 @@ async function getDashboardSummary(req, res, next) {
         `SELECT sj.id AS saved_id, sj.job_id, sj.created_at AS saved_at, j.title, j.company, j.location, j.source_url
          FROM saved_jobs sj JOIN job_descriptions j ON j.id = sj.job_id
          WHERE sj.user_id = ? ORDER BY sj.created_at DESC LIMIT 5`,
-        [userId],
-      ),
-      pool.query(
-        `SELECT a.id, a.job_id, a.status, a.interview_date, a.next_action_date, j.title, j.company
-         FROM applications a JOIN job_descriptions j ON j.id = a.job_id
-         WHERE a.user_id = ? AND a.interview_date >= NOW()
-         ORDER BY a.interview_date ASC LIMIT 4`,
-        [userId],
-      ),
-      pool.query(
-        `SELECT id, type, title, status, created_at FROM interview_sessions
-         WHERE user_id = ? ORDER BY created_at DESC LIMIT 4`,
         [userId],
       ),
       getUserSkillGaps(userId, 5),
@@ -90,8 +78,6 @@ async function getDashboardSummary(req, res, next) {
       applicationPipeline: pipelineRows[0],
       applicationActivity: applicationActivity[0],
       savedRoles: savedRoles[0],
-      upcomingApplications: upcomingApplications[0],
-      practiceSessions: upcomingSessions[0],
       skillGaps,
       recentActivity: recentActivity[0],
     }));

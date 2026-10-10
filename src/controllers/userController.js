@@ -1,5 +1,6 @@
 const { pool } = require('../config/db');
 const { successResponse, errorResponse } = require('../utils/response');
+const { isValidMobileNumber } = require('../utils/validation');
 
 function parseList(value) {
   if (Array.isArray(value)) return value;
@@ -10,18 +11,23 @@ function parseList(value) {
 function sanitizeUser(user) {
   if (!user) return null;
   return {
-    id: user.id, name: user.name, email: user.email, mobile: user.mobile,
-    targetRole: parseList(user.desired_roles)[0] || '',
-    location: parseList(user.preferred_locations)[0] || '',
-    workMode: parseList(user.work_modes)[0] || 'Any',
-    created_at: user.created_at, updated_at: user.updated_at,
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  mobile: user.mobile,
+  role: user.role || 'candidate',
+  targetRole: parseList(user.desired_roles)[0] || '',
+  location: parseList(user.preferred_locations)[0] || '',
+  workMode: parseList(user.work_modes)[0] || 'Any',
+  created_at: user.created_at,
+  updated_at: user.updated_at,
   };
 }
 
 async function getProfile(req, res, next) {
   try {
     const [rows] = await pool.query(
-      `SELECT u.id, u.name, u.email, u.mobile, u.created_at, u.updated_at,
+      `SELECT u.id, u.name, u.email, u.mobile, u.role, u.created_at, u.updated_at,
               p.desired_roles, p.preferred_locations, p.work_modes
        FROM users u LEFT JOIN candidate_preferences p ON p.user_id = u.id
        WHERE u.id = ? LIMIT 1`,
@@ -55,13 +61,14 @@ async function updateProfile(req, res, next) {
     workMode = cleanText('workMode', 20);
   } catch (error) { return res.status(error.statusCode || 400).json(errorResponse(error.message, error.statusCode || 400)); }
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json(errorResponse('Please provide a valid email address.', 400));
+  if (mobile !== undefined && !isValidMobileNumber(mobile)) return res.status(400).json(errorResponse('Enter a valid mobile number with 7 to 15 digits.', 400));
   if (workMode && !['Any', 'Remote', 'Hybrid', 'On-site'].includes(workMode)) return res.status(400).json(errorResponse('Choose Any, Remote, Hybrid, or On-site for work mode.', 400));
 
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     const [rows] = await connection.query(
-      `SELECT u.id, u.name, u.email, u.mobile, u.created_at, u.updated_at,
+      `SELECT u.id, u.name, u.email, u.mobile, u.role, u.created_at, u.updated_at,
               p.desired_roles, p.preferred_locations, p.work_modes
        FROM users u LEFT JOIN candidate_preferences p ON p.user_id = u.id
        WHERE u.id = ? LIMIT 1 FOR UPDATE`,
@@ -92,7 +99,7 @@ async function updateProfile(req, res, next) {
     }
     await connection.commit();
     const [updated] = await pool.query(
-      `SELECT u.id, u.name, u.email, u.mobile, u.created_at, u.updated_at,
+      `SELECT u.id, u.name, u.email, u.mobile, u.role, u.created_at, u.updated_at,
               p.desired_roles, p.preferred_locations, p.work_modes
        FROM users u LEFT JOIN candidate_preferences p ON p.user_id = u.id WHERE u.id = ? LIMIT 1`,
       [req.user.id],

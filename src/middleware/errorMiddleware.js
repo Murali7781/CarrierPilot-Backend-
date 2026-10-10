@@ -22,6 +22,8 @@ function errorMiddleware(err, req, res, next) {
   const payload = {
     success: false,
     message,
+    code: statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : `HTTP_${statusCode}`,
+    errors: [],
   };
   if (err?.providerError && typeof err.providerError === 'object') {
     const { status, type, code } = err.providerError;

@@ -1,3 +1,5 @@
+const { errorResponse } = require('../utils/response');
+
 function authRateLimit({ limit, windowMs, message }) {
   const attempts = new Map();
   let requestsUntilCleanup = 0;
@@ -23,7 +25,7 @@ function authRateLimit({ limit, windowMs, message }) {
 
     if (record.count > limit) {
       res.set('Retry-After', String(Math.ceil((record.resetAt - now) / 1000)));
-      return res.status(429).json({ success: false, message });
+      return res.status(429).json(errorResponse(message, 429));
     }
 
     return next();

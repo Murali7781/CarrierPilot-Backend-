@@ -10,43 +10,39 @@ function parseJson(value) {
 }
 
 async function getCandidateContext(userId) {
-  try {
-    const [[profiles], [resumes], [savedRoles], [applications], [practice], skillGaps] = await Promise.all([
-      pool.query(
-        `SELECT u.name, p.desired_roles, p.preferred_locations, p.work_modes
-         FROM users u LEFT JOIN candidate_preferences p ON p.user_id = u.id WHERE u.id = ? LIMIT 1`,
-        [userId],
-      ),
-      pool.query('SELECT title, professional_summary, skills FROM resumes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 3', [userId]),
-      pool.query(
-        `SELECT j.title, j.company, j.location FROM saved_jobs s JOIN job_descriptions j ON j.id = s.job_id
-         WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT 5`,
-        [userId],
-      ),
-      pool.query(
-        `SELECT j.title, j.company, a.status, a.next_action_date FROM applications a JOIN job_descriptions j ON j.id = a.job_id
-         WHERE a.user_id = ? ORDER BY a.updated_at DESC LIMIT 5`,
-        [userId],
-      ),
-      pool.query(
-        `SELECT s.title, s.type, s.status, j.title AS role_title FROM interview_sessions s
-         LEFT JOIN job_descriptions j ON j.id = s.job_id WHERE s.user_id = ? ORDER BY s.updated_at DESC LIMIT 3`,
-        [userId],
-      ),
-      getUserSkillGaps(userId, 5),
-    ]);
-    const profile = profiles[0] || {};
-    return JSON.stringify({
-      profile: { name: profile.name, targetRoles: parseJson(profile.desired_roles) || [], locations: parseJson(profile.preferred_locations) || [], workModes: parseJson(profile.work_modes) || [] },
-      resumes: resumes.map((resume) => ({ title: resume.title, summary: String(resume.professional_summary || '').slice(0, 500), skills: parseJson(resume.skills) || [] })),
-      savedRoles: savedRoles.map((role) => ({ title: role.title, company: role.company, location: role.location })),
-      applicationPipeline: applications.map((application) => ({ title: application.title, company: application.company, stage: application.status, followUp: application.next_action_date })),
-      interviewPractice: practice.map((session) => ({ title: session.title, type: session.type, status: session.status, role: session.role_title })),
-      skillGaps: skillGaps.map((gap) => ({ skill: gap.skill_name, role: gap.role_title, resume: gap.resume_title })),
-    }).slice(0, 4500);
-  } catch {
-    return '';
-  }
+  const [[profiles], [resumes], [savedRoles], [applications], [practice], skillGaps] = await Promise.all([
+    pool.query(
+      `SELECT u.name, p.desired_roles, p.preferred_locations, p.work_modes
+       FROM users u LEFT JOIN candidate_preferences p ON p.user_id = u.id WHERE u.id = ? LIMIT 1`,
+      [userId],
+    ),
+    pool.query('SELECT title, professional_summary, skills FROM resumes WHERE user_id = ? ORDER BY updated_at DESC LIMIT 3', [userId]),
+    pool.query(
+      `SELECT j.title, j.company, j.location FROM saved_jobs s JOIN job_descriptions j ON j.id = s.job_id
+       WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT 5`,
+      [userId],
+    ),
+    pool.query(
+      `SELECT j.title, j.company, a.status, a.next_action_date FROM applications a JOIN job_descriptions j ON j.id = a.job_id
+       WHERE a.user_id = ? ORDER BY a.updated_at DESC LIMIT 5`,
+      [userId],
+    ),
+    pool.query(
+      `SELECT s.title, s.type, s.status, j.title AS role_title FROM interview_sessions s
+       LEFT JOIN job_descriptions j ON j.id = s.job_id WHERE s.user_id = ? ORDER BY s.updated_at DESC LIMIT 3`,
+      [userId],
+    ),
+    getUserSkillGaps(userId, 5),
+  ]);
+  const profile = profiles[0] || {};
+  return JSON.stringify({
+    profile: { name: profile.name, targetRoles: parseJson(profile.desired_roles) || [], locations: parseJson(profile.preferred_locations) || [], workModes: parseJson(profile.work_modes) || [] },
+    resumes: resumes.map((resume) => ({ title: resume.title, summary: String(resume.professional_summary || '').slice(0, 500), skills: parseJson(resume.skills) || [] })),
+    savedRoles: savedRoles.map((role) => ({ title: role.title, company: role.company, location: role.location })),
+    applicationPipeline: applications.map((application) => ({ title: application.title, company: application.company, stage: application.status, followUp: application.next_action_date })),
+    interviewPractice: practice.map((session) => ({ title: session.title, type: session.type, status: session.status, role: session.role_title })),
+    skillGaps: skillGaps.map((gap) => ({ skill: gap.skill_name, role: gap.role_title, resume: gap.resume_title })),
+  }).slice(0, 4500);
 }
 
 async function chatWithAi(req, res, next) {
@@ -81,7 +77,9 @@ function getAiStatus(req, res) {
   const mode = getAiMode();
   return res.status(200).json(successResponse('Career assistant status', {
     mode,
-    message: mode === 'openai' ? 'An API key is configured; send a message to verify API access.' : 'Using local workspace-based guidance.',
+    message: mode === 'openai'
+      ? 'An API key is configured; send a message to verify API access.'
+      : 'OpenAI is not configured. Add OPENAI_API_KEY or AI_API_KEY to the server environment and restart the backend.',
   }));
 }
 

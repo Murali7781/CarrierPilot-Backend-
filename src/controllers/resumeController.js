@@ -143,10 +143,26 @@ async function downloadResume(req, res, next) {
 
 async function analyzeResumeForJob(req, res, next) {
   try {
-    const jobDescription = String(req.body?.jobDescription || '').trim();
-    const targetRole = String(req.body?.targetRole || '').trim().slice(0, 150) || null;
+    const { jobDescription: submittedDescription, targetRole: submittedRole } = req.body || {};
+    if (typeof submittedDescription !== 'string') {
+      const error = new Error('Job description must be text.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (submittedRole != null && typeof submittedRole !== 'string') {
+      const error = new Error('Target role must be text.');
+      error.statusCode = 400;
+      throw error;
+    }
+    const jobDescription = submittedDescription.trim();
+    const targetRole = String(submittedRole || '').trim().slice(0, 150) || null;
     if (jobDescription.length < 30) {
       const error = new Error('Add a job description with at least 30 characters to run the ATS check.');
+      error.statusCode = 400;
+      throw error;
+    }
+    if (jobDescription.length > 15000) {
+      const error = new Error('Job description must be 15,000 characters or fewer.');
       error.statusCode = 400;
       throw error;
     }

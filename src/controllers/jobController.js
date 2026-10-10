@@ -81,8 +81,12 @@ async function storeExternalJobs(userId, country, jobs) {
 
   const externalIds = jobs.map((job) => job.sourceJobId);
   const [rows] = await pool.query(
-    `SELECT * FROM job_descriptions
-     WHERE user_id = ? AND source = 'adzuna' AND source_country = ? AND source_job_id IN (?)`,
+    `SELECT j.*, a.id AS application_id, a.status AS application_status,
+            sj.id AS saved_job_id
+     FROM job_descriptions j
+     LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = j.user_id
+     LEFT JOIN saved_jobs sj ON sj.job_id = j.id AND sj.user_id = j.user_id
+     WHERE j.user_id = ? AND j.source = 'adzuna' AND j.source_country = ? AND j.source_job_id IN (?)`,
     [userId, country, externalIds],
   );
   const rowByExternalId = new Map(rows.map((row) => [row.source_job_id, row]));
@@ -117,21 +121,33 @@ async function listJobs(req, res, next) {
         pagination: { page, limit: 20, total: result.total, totalPages: Math.ceil(result.total / 20) },
       }));
     }
-    const where = ['user_id = ?'];
+    const where = ['j.user_id = ?', "(j.source IS NULL OR j.source <> 'sample')"];
     const values = [req.user.id];
     if (req.query.search !== undefined) {
       const searchText = cleanText(req.query.search, 'search', { max: 100 });
-      if (searchText) { where.push('(title LIKE ? OR company LIKE ? OR description LIKE ?)'); const search = `%${searchText}%`; values.push(search, search, search); }
+      if (searchText) { where.push('(j.title LIKE ? OR j.company LIKE ? OR j.description LIKE ?)'); const search = `%${searchText}%`; values.push(search, search, search); }
     }
     if (req.query.company !== undefined) {
       const company = cleanText(req.query.company, 'company', { max: 150 });
-      if (company) { where.push('company = ?'); values.push(company); }
+      if (company) { where.push('j.company = ?'); values.push(company); }
     }
     const whereSql = where.join(' AND ');
     const offset = (page - 1) * limit;
     const [rows, countRows] = await Promise.all([
-      pool.query(`SELECT id, user_id, title, company, description, required_skills, preferred_skills, experience_requirements, location, source_url, created_at, updated_at FROM job_descriptions WHERE ${whereSql} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, [...values, limit, offset]),
-      pool.query(`SELECT COUNT(*) AS total FROM job_descriptions WHERE ${whereSql}`, values),
+      pool.query(
+        `SELECT j.id, j.title, j.company, j.description, j.required_skills, j.preferred_skills,
+                j.experience_requirements, j.source, j.location, j.work_mode, j.employment_type,
+                j.salary_min, j.salary_max, j.salary_currency, j.apply_url, j.source_url,
+                j.published_at, j.created_at, j.updated_at,
+                a.id AS application_id, a.status AS application_status,
+                sj.id AS saved_job_id
+         FROM job_descriptions j
+         LEFT JOIN applications a ON a.job_id = j.id AND a.user_id = j.user_id
+         LEFT JOIN saved_jobs sj ON sj.job_id = j.id AND sj.user_id = j.user_id
+         WHERE ${whereSql} ORDER BY j.created_at DESC, j.id DESC LIMIT ? OFFSET ?`,
+        [...values, limit, offset],
+      ),
+      pool.query(`SELECT COUNT(*) AS total FROM job_descriptions j WHERE ${whereSql}`, values),
     ]);
     const total = Number(countRows[0][0].total) || 0;
     return res.status(200).json(successResponse('Job descriptions retrieved successfully', { jobs: rows[0], pagination: { page, limit, total, totalPages: Math.ceil(total / limit) } }));
@@ -167,7 +183,7 @@ async function getJob(req, res, next) {
               (SELECT sj.id FROM saved_jobs sj WHERE sj.job_id = j.id AND sj.user_id = ? LIMIT 1) AS saved_job_id,
               (SELECT a.id FROM applications a WHERE a.job_id = j.id AND a.user_id = ? LIMIT 1) AS application_id,
               (SELECT a.status FROM applications a WHERE a.job_id = j.id AND a.user_id = ? LIMIT 1) AS application_status
-       FROM job_descriptions j WHERE j.id = ? AND j.user_id = ? LIMIT 1`,
+       FROM job_descriptions j WHERE j.id = ? AND j.user_id = ? AND (j.source IS NULL OR j.source <> 'sample') LIMIT 1`,
       [req.user.id, req.user.id, req.user.id, id, req.user.id],
     );
     if (!rows.length) return res.status(404).json(errorResponse('Job description not found'));

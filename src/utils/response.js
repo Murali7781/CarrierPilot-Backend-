@@ -6,10 +6,12 @@ function successResponse(message, data = {}) {
   };
 }
 
-function errorResponse(message) {
+function errorResponse(message, statusCode) {
   return {
     success: false,
     message,
+    code: Number.isInteger(statusCode) ? `HTTP_${statusCode}` : 'REQUEST_FAILED',
+    errors: [],
   };
 }
 

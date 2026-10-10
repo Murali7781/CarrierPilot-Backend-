@@ -30,6 +30,17 @@ function positiveInteger(value, fieldName = 'value') {
   return parsed;
 }
 
+function isValidMobileNumber(value) {
+  if (value === null || value === undefined || value === '') return true;
+  if (typeof value !== 'string') return false;
+
+  const mobile = value.trim();
+  const digits = mobile.replace(/\D/g, '').length;
+  return mobile.length <= 20 && digits >= 7 && digits <= 15 &&
+    /^\+?(?:[0-9]|\([0-9]{1,4}\))[0-9 ().-]*[0-9]$/.test(mobile);
+}
+
 module.exports = {
   positiveInteger,
+  isValidMobileNumber,
 };

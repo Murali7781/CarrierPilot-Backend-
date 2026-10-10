@@ -35,13 +35,30 @@ async function authMiddleware(req, res, next) {
 
   try {
     const [rows] = await pool.query(
-      'SELECT id, name, email, mobile, token_version, created_at, updated_at FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, email, mobile, role, token_version, created_at, updated_at FROM users WHERE id = ? LIMIT 1',
       [decoded.id],
     );
-    if (!rows.length || Number(decoded.tokenVersion) !== Number(rows[0].token_version)) {
+    if (!rows.length) {
       return res.status(401).json(errorResponse('Your session is no longer valid. Sign in again.', 401));
     }
-    req.user = rows[0];
+
+    const dbUser = rows[0];
+    const role = String(dbUser.role || '').toLowerCase();
+    const decodedRole = String(decoded.role || '').toLowerCase();
+
+    if (!role || !['candidate', 'recruiter', 'admin'].includes(role)) {
+      return res.status(401).json(errorResponse('Your account role is invalid. Contact support.', 401));
+    }
+
+    if (decodedRole && decodedRole !== role) {
+      return res.status(401).json(errorResponse('Your session role has changed. Sign in again.', 401));
+    }
+
+    if (Number(decoded.tokenVersion) !== Number(dbUser.token_version)) {
+      return res.status(401).json(errorResponse('Your session is no longer valid. Sign in again.', 401));
+    }
+
+    req.user = { ...dbUser, role };
     return next();
   } catch (error) {
     return next(error);
