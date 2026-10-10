@@ -60,8 +60,8 @@ async function register(req, res, next) {
     if (normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
       return res.status(400).json(errorResponse('Please provide a valid email address', 400));
     }
-    if (password.length < 12) {
-      return res.status(400).json(errorResponse('Use a password with at least 12 characters', 400));
+    if (password.length !== 8) {
+      return res.status(400).json(errorResponse('Password must be exactly 8 characters.', 400));
     }
     if (Buffer.byteLength(password, 'utf8') > 72) {
       return res.status(400).json(errorResponse('Password must be 72 bytes or fewer', 400));

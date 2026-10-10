@@ -54,25 +54,40 @@ test('registration ignores a requested privileged role and stores a bcrypt hash'
   };
 
   const missingConfirmationResponse = createResponse();
-  await register({ body: { name: 'Candidate', email: 'candidate@example.com', password: 'correct-horse-battery', role: 'admin' } }, missingConfirmationResponse, assert.fail);
+  await register({ body: { name: 'Candidate', email: 'candidate@example.com', password: 'Abcd1234', role: 'admin' } }, missingConfirmationResponse, assert.fail);
   assert.equal(missingConfirmationResponse.statusCode, 400);
   assert.equal(insertedValues, undefined);
 
   const mismatchResponse = createResponse();
-  await register({ body: { name: 'Candidate', email: 'candidate@example.com', password: 'correct-horse-battery', confirmPassword: 'different-password', role: 'admin' } }, mismatchResponse, assert.fail);
+  await register({ body: { name: 'Candidate', email: 'candidate@example.com', password: 'Abcd1234', confirmPassword: 'XyZ98765', role: 'admin' } }, mismatchResponse, assert.fail);
   assert.equal(mismatchResponse.statusCode, 400);
   assert.equal(insertedValues, undefined);
 
   const response = createResponse();
-  await register({ body: { name: 'Candidate', email: 'candidate@example.com', password: 'correct-horse-battery', confirmPassword: 'correct-horse-battery', role: 'admin' } }, response, assert.fail);
+  await register({ body: { name: 'Candidate', email: 'candidate@example.com', password: 'Abcd1234', confirmPassword: 'Abcd1234', role: 'admin' } }, response, assert.fail);
 
   assert.equal(response.statusCode, 201);
   assert.equal(insertedValues[4], 'candidate');
-  assert.notEqual(insertedValues[2], 'correct-horse-battery');
+  assert.notEqual(insertedValues[2], 'Abcd1234');
   assert.equal(response.body.data.user.role, 'candidate');
   assert.equal(response.cookieName, 'careerpilot_session');
   assert.equal(response.cookieOptions.httpOnly, true);
   assert.equal(jwt.verify(response.cookieValue, secret, { issuer: 'careerpilot-api', audience: 'careerpilot-web' }).role, 'candidate');
+});
+
+test('registration rejects passwords shorter or longer than eight characters before database insert', async (t) => {
+  const originalQuery = pool.query;
+  t.after(() => { pool.query = originalQuery; });
+  let inserted = false;
+  pool.query = async () => { inserted = true; throw new Error('Unexpected database insert'); };
+
+  for (const password of ['Abc1234', 'Abcd12345']) {
+    const response = createResponse();
+    await register({ body: { name: 'Candidate', email: 'candidate@example.com', password, confirmPassword: password } }, response, assert.fail);
+    assert.equal(response.statusCode, 400);
+    assert.match(response.body.message, /exactly 8 characters/i);
+  }
+  assert.equal(inserted, false);
 });
 
 test('login rejects unsupported database roles and issues a cookie only for an allowed role', async (t) => {

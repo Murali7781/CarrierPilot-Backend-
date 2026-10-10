@@ -72,6 +72,24 @@ test('permissions allow candidate workflows but keep recruiter resources isolate
   assert.equal(recruiterResponse.getStatus(), 403);
 });
 
+test('recruiters can manage only their job workspace and cannot enter candidate or admin workflows', () => {
+  const checks = [
+    ['recruiter', 'jobs.view', 200],
+    ['recruiter', 'jobs.create', 200],
+    ['recruiter', 'resumes.view', 403],
+    ['recruiter', 'applications.view', 403],
+    ['recruiter', 'dashboard.view', 403],
+    ['candidate', 'jobs.create', 200],
+    ['candidate', 'applications.view', 200],
+  ];
+  for (const [role, permission, expected] of checks) {
+    let passed = false;
+    const response = createResponse();
+    requirePermission(permission)({ user: { role } }, response, () => { passed = true; });
+    assert.equal(passed ? 200 : response.getStatus(), expected, `${role} ${permission}`);
+  }
+});
+
 test('permissions reject unknown roles, unknown permissions, and missing policy', () => {
   const cases = [
     { user: { role: 'support' }, permission: 'jobs.view' },
