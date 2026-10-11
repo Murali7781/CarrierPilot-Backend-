@@ -1,5 +1,7 @@
 const mysql = require('mysql2/promise');
 const { lookup } = require('node:dns/promises');
+const { X509Certificate } = require('node:crypto');
+const { createSecureContext } = require('node:tls');
 
 const requiredEnvironmentVariables = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
 
@@ -18,6 +20,33 @@ function getDatabaseConfig() {
     throw new Error('DB_PORT must be a valid positive integer.');
   }
 
+  let ssl;
+  if (process.env.NODE_ENV === 'production') {
+    const caCertificate = process.env.DB_CA_CERT?.replace(/\\n/g, '\n').trim();
+
+    if (!caCertificate) {
+      throw new Error('DB_CA_CERT is required in production for verified MySQL TLS connections.');
+    }
+
+    try {
+      const certificates = caCertificate.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
+      const remainingPem = caCertificate.replace(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g, '').trim();
+      if (!certificates?.length || remainingPem) {
+        throw new Error('Invalid PEM certificate format.');
+      }
+      for (const certificate of certificates) {
+        if (!new X509Certificate(certificate).ca) {
+          throw new Error('The supplied certificate is not a CA certificate.');
+        }
+      }
+      createSecureContext({ ca: caCertificate });
+    } catch {
+      throw new Error('DB_CA_CERT must contain a valid PEM-encoded CA certificate in production.');
+    }
+
+    ssl = { ca: caCertificate, rejectUnauthorized: true };
+  }
+
   return {
     host: process.env.DB_HOST.trim(),
     user: process.env.DB_USER.trim(),
@@ -28,9 +57,7 @@ function getDatabaseConfig() {
     connectionLimit: 10,
     queueLimit: 0,
     charset: 'utf8mb4',
-    ssl: process.env.NODE_ENV === 'production'
-      ? { rejectUnauthorized: true }
-      : undefined,
+    ssl,
   };
 }
 
