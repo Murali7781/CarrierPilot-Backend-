@@ -21,6 +21,9 @@ async function startServer() {
     await testDatabaseConnection();
   } catch (error) {
     console.error('DATABASE CONNECTION FAILED');
+    const { code, message } = formatSafeDatabaseError(error);
+    console.error(`Error Code: ${code}`);
+    console.error(`Error Message: ${message}`);
     console.error(getDatabaseFailureMessage(error));
     await pool.end();
     process.exitCode = 1;
@@ -33,7 +36,9 @@ async function startServer() {
     await initializeDatabase();
   } catch (error) {
     console.error('DATABASE INITIALIZATION FAILED');
-    console.error(error.code || 'Database initialization could not be completed.');
+    const { code, message } = formatSafeDatabaseError(error);
+    console.error(`Error Code: ${code}`);
+    console.error(`Error Message: ${message}`);
     await pool.end();
     process.exitCode = 1;
     return;
@@ -54,20 +59,57 @@ async function startServer() {
   });
 }
 
+function formatSafeDatabaseError(error) {
+  if (!error) {
+    return { code: 'UNKNOWN_ERROR', message: 'An unknown database error occurred.' };
+  }
+
+  const code = error.code || error.name || 'ERR_DATABASE_CONNECTION';
+  let message = error.message || 'No specific error message provided.';
+
+  message = message
+    .replace(/(password|pwd|pass)[:=][^\s&;]+/gi, '$1=***')
+    .replace(/(:\/\/)([^:@\s]+):([^@\s]+)@/g, '$1$2:***@')
+    .replace(/-----BEGIN [A-Z ]+-----[\s\S]+?-----END [A-Z ]+-----/g, '[REDACTED CERTIFICATE]');
+
+  return { code, message };
+}
+
 function getDatabaseFailureMessage(error) {
-  switch (error.code) {
+  const code = error?.code;
+  const message = error?.message || '';
+
+  const isTlsError = [
+    'HANDSHAKE_SSL_ERROR',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'CERT_HAS_EXPIRED',
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+    'CERT_NOT_YET_VALID',
+    'ERR_CRYPTO_CUSTOM_CERT',
+  ].includes(code) || /certificate|TLS|SSL/i.test(message);
+
+  if (isTlsError) {
+    return `TLS certificate verification failed${code ? ` (${code})` : ''}. Verify DB_CA_CERT in Render matches the Aiven CA certificate (ca.pem).`;
+  }
+
+  switch (code) {
     case 'ENOTFOUND':
     case 'EAI_AGAIN':
-      return `Database hostname could not be resolved (${error.code}). Verify DB_HOST against the Aiven service connection details and confirm the service is available.`;
+      return `Database hostname could not be resolved (${code}). Verify DB_HOST against the Aiven service connection details and confirm the service is available.`;
     case 'ER_ACCESS_DENIED_ERROR':
       return 'The database rejected the configured credentials. Verify DB_USER and DB_PASSWORD in Render.';
     case 'ER_BAD_DB_ERROR':
       return 'The configured database does not exist or is not accessible. Verify DB_NAME in Render.';
     case 'ECONNREFUSED':
     case 'ETIMEDOUT':
-      return `The database connection failed (${error.code}). Verify DB_HOST, DB_PORT, Aiven service availability, and network access.`;
+      return `The database connection failed (${code}). Verify DB_HOST, DB_PORT, Aiven service availability, and network access.`;
     default:
-      return `The database connection failed${error.code ? ` (${error.code})` : ''}. Check the Render and Aiven connection settings.`;
+      if (message.includes('DB_CA_CERT')) {
+        return `${message} Verify DB_CA_CERT in Render environment settings.`;
+      }
+      return `The database connection failed${code ? ` (${code})` : ''}. Check the Render and Aiven connection settings.`;
   }
 }
 

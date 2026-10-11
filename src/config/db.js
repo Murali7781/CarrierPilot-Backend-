@@ -5,6 +5,40 @@ const { createSecureContext } = require('node:tls');
 
 const requiredEnvironmentVariables = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME', 'DB_PORT'];
 
+function normalizeCaCertificate(rawCertificate) {
+  if (!rawCertificate || typeof rawCertificate !== 'string') {
+    return '';
+  }
+
+  let certificate = rawCertificate.trim();
+
+  if (
+    (certificate.startsWith('"') && certificate.endsWith('"')) ||
+    (certificate.startsWith("'") && certificate.endsWith("'"))
+  ) {
+    certificate = certificate.slice(1, -1).trim();
+  }
+
+  certificate = certificate
+    .replace(/\\r/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .trim();
+
+  if (!certificate.includes('-----BEGIN CERTIFICATE-----')) {
+    try {
+      const decoded = Buffer.from(certificate, 'base64').toString('utf8').trim();
+      if (decoded.includes('-----BEGIN CERTIFICATE-----')) {
+        certificate = decoded.replace(/\r\n/g, '\n').trim();
+      }
+    } catch {
+      // Retain original string for standard validation
+    }
+  }
+
+  return certificate;
+}
+
 function getDatabaseConfig() {
   const missingVariables = requiredEnvironmentVariables.filter(
     (variable) => !process.env[variable]?.trim(),
@@ -22,7 +56,7 @@ function getDatabaseConfig() {
 
   let ssl;
   if (process.env.NODE_ENV === 'production') {
-    const caCertificate = process.env.DB_CA_CERT?.replace(/\\n/g, '\n').trim();
+    const caCertificate = normalizeCaCertificate(process.env.DB_CA_CERT);
 
     if (!caCertificate) {
       throw new Error('DB_CA_CERT is required in production for verified MySQL TLS connections.');

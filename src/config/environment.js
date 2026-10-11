@@ -30,8 +30,13 @@ function validateEnvironment() {
     throw new Error('DB_PORT must be a valid port number between 1 and 65535.');
   }
 
-  if (process.env.NODE_ENV === 'production' && process.env.DB_USER.toLowerCase() === 'root') {
-    throw new Error('DB_USER must be a least-privileged application database user, not root.');
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.DB_CA_CERT?.trim()) {
+      throw new Error('DB_CA_CERT is required in production for verified MySQL TLS connections.');
+    }
+    if (process.env.DB_USER.toLowerCase() === 'root') {
+      throw new Error('DB_USER must be a least-privileged application database user, not root.');
+    }
   }
 
   if (process.env.PORT !== undefined) {
